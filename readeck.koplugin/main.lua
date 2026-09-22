@@ -29,9 +29,7 @@ local L = I18n.with_gettext(_, function()
     return G_reader_settings
 end)
 
-local plugin_source = debug.getinfo(1, "S").source:gsub("^@", "")
-local plugin_dir = plugin_source:match("^(.*)[/\\][^/\\]+$") or "."
-local PluginMetadata = dofile(plugin_dir .. "/_meta.lua")
+local PLUGIN_VERSION = require("readeck.version")
 
 local Readeck = WidgetContainer:extend({
     name = "readeck",
@@ -48,7 +46,7 @@ local deps = {
     downloaded = Defaults.DOWNLOAD_DONE,
     OAUTH_DEVICE_GRANT = Defaults.OAUTH_DEVICE_GRANT,
     DEFAULT_OAUTH_SCOPES = Defaults.DEFAULT_OAUTH_SCOPES,
-    PLUGIN_VERSION = PluginMetadata.version,
+    PLUGIN_VERSION = PLUGIN_VERSION,
 }
 
 Helpers.install(Readeck, deps)
