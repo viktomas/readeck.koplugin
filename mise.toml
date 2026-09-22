@@ -88,6 +88,21 @@ run_probe 0.22.2 18080 0
 run_probe 0.22.1 18081 1
 """
 
+[tasks.emulator-live-probe]
+description = "READ-ONLY probe against a REAL Readeck server (needs emulator-build; uses READECK_URL/READECK_TOKEN or the emulator's seeded settings/readeck.lua). Never creates, modifies, archives, labels, deletes or annotates anything - only GETs and EPUB downloads to a temp dir."
+run = """
+set -e
+BUILD_DIR="$(cd "$(echo references/koreader/koreader-emulator-*/koreader | head -1)" && pwd)"
+if [ ! -x "$BUILD_DIR/luajit" ]; then
+    echo "No emulator build at $BUILD_DIR - run 'mise run emulator-build' first." >&2
+    exit 1
+fi
+cd "$BUILD_DIR" && READECK_PLUGIN_DIR="{{config_root}}/readeck.koplugin" \
+    READECK_URL="$READECK_URL" READECK_TOKEN="$READECK_TOKEN" \
+    READECK_SETTINGS_FILE="$BUILD_DIR/settings/readeck.lua" \
+    ./luajit "{{config_root}}/spec/koreader_live_probe.lua"
+"""
+
 [tasks.emulator-seed]
 description = "Write the emulator's readeck.lua settings from READECK_URL/READECK_TOKEN so you do not have to type a token into the emulator UI"
 run = """
