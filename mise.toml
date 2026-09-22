@@ -103,6 +103,56 @@ cd "$BUILD_DIR" && READECK_PLUGIN_DIR="{{config_root}}/readeck.koplugin" \
     ./luajit "{{config_root}}/spec/koreader_live_probe.lua"
 """
 
+[tasks.emulator-live-probe-write]
+description = """
+OPT-IN WRITE MODE. If pointed at a real Readeck server (via READECK_URL/READECK_TOKEN) \
+this task WRITES to it: it creates exactly ONE bookmark from a harmless public URL, \
+exports and then updates one highlight on it via the plugin's real code paths, and \
+deletes that same bookmark again before exiting. A runtime assertion refuses to touch \
+any bookmark id other than the one this run created; if anything goes wrong partway \
+through, cleanup still runs and the created id is printed loudly if it could not be \
+deleted. Needs emulator-build. Do NOT point this at a real account without the \
+account owner's explicit sign-off for this run - verify against \
+spec/mock_readeck_server.py first (point READECK_URL at a running instance of it, \
+any READECK_TOKEN value, the same way `mise run emulator-network-smoke` does).
+"""
+run = """
+set -e
+BUILD_DIR="$(cd "$(echo references/koreader/koreader-emulator-*/koreader | head -1)" && pwd)"
+if [ ! -x "$BUILD_DIR/luajit" ]; then
+    echo "No emulator build at $BUILD_DIR - run 'mise run emulator-build' first." >&2
+    exit 1
+fi
+if [ -z "$READECK_URL" ] || [ -z "$READECK_TOKEN" ]; then
+    echo "Set READECK_URL and READECK_TOKEN. This WRITES to whatever server READECK_URL points at." >&2
+    exit 1
+fi
+cd "$BUILD_DIR" && READECK_PLUGIN_DIR="{{config_root}}/readeck.koplugin" \
+    READECK_URL="$READECK_URL" READECK_TOKEN="$READECK_TOKEN" READECK_LIVE_WRITE=1 \
+    ./luajit "{{config_root}}/spec/koreader_live_probe.lua"
+"""
+
+[tasks.emulator-live-probe-write-mock-smoke]
+description = "Offline rehearsal of emulator-live-probe-write against spec/mock_readeck_server.py (no real server involved). Run this before ever pointing emulator-live-probe-write at a real account."
+run = """
+set -e
+BUILD_DIR="$(cd "$(echo references/koreader/koreader-emulator-*/koreader | head -1)" && pwd)"
+if [ ! -x "$BUILD_DIR/luajit" ]; then
+    echo "No emulator build at $BUILD_DIR - run 'mise run emulator-build' first." >&2
+    exit 1
+fi
+python3 spec/mock_readeck_server.py --port 18280 --version 0.23.4 --load-delay 0.5 &
+server_pid=$!
+sleep 0.5
+(cd "$BUILD_DIR" && READECK_PLUGIN_DIR="{{config_root}}/readeck.koplugin" \
+    READECK_URL="http://127.0.0.1:18280" READECK_TOKEN="mock-token" READECK_LIVE_WRITE=1 \
+    ./luajit "{{config_root}}/spec/koreader_live_probe.lua")
+status=$?
+kill $server_pid 2>/dev/null || true
+wait $server_pid 2>/dev/null || true
+exit $status
+"""
+
 [tasks.emulator-seed]
 description = "Write the emulator's readeck.lua settings from READECK_URL/READECK_TOKEN so you do not have to type a token into the emulator UI"
 run = """
