@@ -232,6 +232,31 @@ else
     )
 end
 
+-- 7. Error reporting: does a real rejection reach the UI with a reason? ------
+-- Read-only: a GET for an id that cannot exist. The plugin used to read the
+-- error body only for a debug log line, so every failure looked identical to
+-- the user.
+local missing_id = "readeck-live-probe-no-such-bookmark"
+local missing_result, missing_err = instance:getApi():list_annotations(missing_id)
+print("[errors] GET unknown bookmark - result:", tostring(missing_result))
+if missing_err then
+    print(
+        "[errors] kind:",
+        missing_err.kind,
+        "code:",
+        tostring(missing_err.code),
+        "message:",
+        tostring(missing_err.message)
+    )
+    if missing_err.message then
+        print("[errors] OK - the reason survives to the UI layer:", instance:formatAPIErrorMessage(missing_err))
+    else
+        print("[errors] WARN - no message extracted; the user would see a bare generic failure")
+    end
+else
+    print("[errors] WARN - expected an error for a non-existent bookmark id")
+end
+
 print("=======================================================")
 print("Live probe finished - no writes were performed against", server_url)
 print("=======================================================")
