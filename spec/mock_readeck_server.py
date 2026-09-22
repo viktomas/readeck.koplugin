@@ -3,6 +3,7 @@ import argparse
 import json
 import re
 import time
+from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -22,8 +23,125 @@ LOAD_DELAY_SECONDS = 0.6
 
 BOOKMARK_ID_RE = re.compile(r"^/api/bookmarks/([^/]+)$")
 BOOKMARK_ARTICLE_RE = re.compile(r"^/api/bookmarks/([^/]+)/article\.epub$")
+BOOKMARK_ARTICLE_HTML_RE = re.compile(r"^/api/bookmarks/([^/]+)/article$")
 BOOKMARK_ANNOTATIONS_RE = re.compile(r"^/api/bookmarks/([^/]+)/annotations$")
 BOOKMARK_ANNOTATION_RE = re.compile(r"^/api/bookmarks/([^/]+)/annotations/([^/]+)$")
+
+# Article HTML given to newly-created bookmarks (POST /api/bookmarks) - a
+# single <section> whose first (and only) child is a <p>. This matches the
+# minimal shape spec/koreader_live_probe.lua's write-mode selector-derivation
+# assumes and lets its POSTed annotation resolve for real, instead of the mock
+# blindly accepting whatever selector was sent (which is the bug this whole
+# change fixes - see the module docstring history / task notes).
+DEFAULT_ARTICLE_HTML = "<section><p>Example paragraph one.</p></section>"
+
+
+class _ElementTreeBuilder(HTMLParser):
+    """Builds a minimal tag tree (tag name + children, in document order) out
+    of served article HTML, good enough to resolve Readeck-style selector
+    paths like 'section/p[2]' against it. Not a general HTML/XPath engine -
+    just enough structure-checking to stop the mock accepting selectors that
+    could never resolve on the real server."""
+
+    VOID_ELEMENTS = {
+        "area", "base", "br", "col", "embed", "hr", "img", "input",
+        "link", "meta", "param", "source", "track", "wbr",
+    }
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.root = {"tag": None, "children": []}
+        self.stack = [self.root]
+
+    def handle_starttag(self, tag, attrs):
+        node = {"tag": tag.lower(), "children": []}
+        self.stack[-1]["children"].append(node)
+        if tag.lower() not in self.VOID_ELEMENTS:
+            self.stack.append(node)
+
+    def handle_startendtag(self, tag, attrs):
+        self.stack[-1]["children"].append({"tag": tag.lower(), "children": []})
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        for i in range(len(self.stack) - 1, 0, -1):
+            if self.stack[i]["tag"] == tag:
+                del self.stack[i:]
+                break
+
+
+def parse_html_tree(html):
+    builder = _ElementTreeBuilder()
+    builder.feed(html or "")
+    return builder.root
+
+
+def selector_resolves(tree, selector):
+    """Mirrors (in miniature) what the real Readeck server does: it resolves
+    start_selector/end_selector against the DOM of the stored article and
+    rejects the annotation if a path segment does not exist. Returns True iff
+    every 'tag[index]' segment of `selector` (leading slash optional) can be
+    walked from the tree root."""
+    selector = str(selector or "").strip()
+    if selector.startswith("/"):
+        selector = selector[1:]
+    if not selector:
+        return False
+    node = tree
+    for part in selector.split("/"):
+        match = re.match(r"^([a-zA-Z][a-zA-Z0-9]*)(?:\[(\d+)\])?$", part)
+        if not match:
+            return False
+        tag, index = match.group(1).lower(), int(match.group(2) or "1")
+        count = 0
+        found = None
+        for child in node["children"]:
+            if child["tag"] == tag:
+                count += 1
+                if count == index:
+                    found = child
+                    break
+        if found is None:
+            return False
+        node = found
+    return True
+
+
+def normalize_selector_for_compare(selector):
+    parts = []
+    for part in re.findall(r"[^/]+", str(selector or "")):
+        if "[" not in part:
+            part = part + "[1]"
+        parts.append(part)
+    normalized = "/".join(parts)
+    return re.sub(r"\[(\d+)\]", lambda m: "[%05d]" % int(m.group(1)), normalized)
+
+
+def compare_points(selector_a, offset_a, selector_b, offset_b):
+    norm_a = normalize_selector_for_compare(selector_a)
+    norm_b = normalize_selector_for_compare(selector_b)
+    if norm_a != norm_b:
+        return -1 if norm_a < norm_b else 1
+    offset_a, offset_b = int(offset_a), int(offset_b)
+    if offset_a != offset_b:
+        return -1 if offset_a < offset_b else 1
+    return 0
+
+
+def annotations_overlap(a, b):
+    """Same overlap definition as readeck/annotations/highlights.lua's
+    Highlights.overlap: two [start, end) ranges (ordered by selector then
+    offset) overlap iff each one's start comes before the other's end."""
+    a_start_s, a_start_o, a_end_s, a_end_o = a["start_selector"], a["start_offset"], a["end_selector"], a["end_offset"]
+    b_start_s, b_start_o, b_end_s, b_end_o = b["start_selector"], b["start_offset"], b["end_selector"], b["end_offset"]
+    if compare_points(a_start_s, a_start_o, a_end_s, a_end_o) > 0:
+        a_start_s, a_start_o, a_end_s, a_end_o = a_end_s, a_end_o, a_start_s, a_start_o
+    if compare_points(b_start_s, b_start_o, b_end_s, b_end_o) > 0:
+        b_start_s, b_start_o, b_end_s, b_end_o = b_end_s, b_end_o, b_start_s, b_start_o
+    return (
+        compare_points(a_start_s, a_start_o, b_end_s, b_end_o) < 0
+        and compare_points(b_start_s, b_start_o, a_end_s, a_end_o) < 0
+    )
 
 
 def new_state():
@@ -42,6 +160,19 @@ def new_state():
                 # tests that expect the epub/annotations to be available
                 # immediately.
                 "ready_at": 0.0,
+                # Three paragraphs so spec/koreader_network_probe.lua's fixed
+                # selectors (section/p[1] for the pre-existing annotation,
+                # section/p[2] for the newly POSTed one, section/p[3] for the
+                # one that references a remotely-deleted annotation id) all
+                # resolve against a real document structure, same as the real
+                # server would require.
+                "article_html": (
+                    "<section>"
+                    "<p>First paragraph text here.</p>"
+                    "<p>Second paragraph text here.</p>"
+                    "<p>Third paragraph text here.</p>"
+                    "</section>"
+                ),
                 "annotations": [
                     {
                         "id": "remote-existing",
@@ -308,6 +439,23 @@ class MockReadeckHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        match = BOOKMARK_ARTICLE_HTML_RE.match(path)
+        if match:
+            bookmark = find_bookmark(match.group(1))
+            if not bookmark:
+                write_json(self, {"error": "not_found", "path": path}, 404)
+                return
+            if not bookmark_is_ready(bookmark):
+                write_json(self, {"error": "not_ready", "path": path}, 404)
+                return
+            body = bookmark.get("article_html", DEFAULT_ARTICLE_HTML).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         match = BOOKMARK_ANNOTATIONS_RE.match(path)
         if match:
             bookmark = find_bookmark(match.group(1))
@@ -376,6 +524,7 @@ class MockReadeckHandler(BaseHTTPRequestHandler):
                 "labels": list_value(payload.get("labels")),
                 "is_archived": False,
                 "ready_at": time.time() + LOAD_DELAY_SECONDS,
+                "article_html": DEFAULT_ARTICLE_HTML,
                 "annotations": [],
             }
             STATE["bookmarks"].append(bookmark)
@@ -400,6 +549,26 @@ class MockReadeckHandler(BaseHTTPRequestHandler):
             if error:
                 write_json(self, error, 422)
                 return
+
+            # Real Readeck resolves start_selector/end_selector against the
+            # DOM of the article it stored and rejects the POST with this
+            # exact 400 shape when a selector does not exist there. Validate
+            # the same way instead of accepting any selector unconditionally.
+            tree = parse_html_tree(bookmark.get("article_html", DEFAULT_ARTICLE_HTML))
+            for field in ("start_selector", "end_selector"):
+                if not selector_resolves(tree, payload[field]):
+                    write_json(
+                        self,
+                        {"status": 400, "message": 'element "%s" not found' % payload[field]},
+                        400,
+                    )
+                    return
+
+            for existing in bookmark["annotations"]:
+                if annotations_overlap(payload, existing):
+                    write_json(self, {"status": 400, "message": "overlapping annotation"}, 400)
+                    return
+
             annotation_id = "created-%d" % STATE["next_annotation_seq"]
             STATE["next_annotation_seq"] += 1
             payload = dict(payload)

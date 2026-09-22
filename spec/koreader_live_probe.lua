@@ -258,6 +258,8 @@ print("=======================================================")
 -- =====================================================================
 if os.getenv("READECK_LIVE_WRITE") == "1" then
     local socket = require("socket")
+    local http = require("socket.http")
+    local socketutil = require("socketutil")
 
     print("=======================================================")
     print("WRITE MODE ENABLED (READECK_LIVE_WRITE=1) - server:", server_url)
@@ -318,7 +320,70 @@ if os.getenv("READECK_LIVE_WRITE") == "1" then
         return guarded_api
     end
 
-    math.randomseed(os.time())
+    -- Raw GET of the stored article's HTML (not exposed by readeck/net/api.lua,
+    -- which only knows about the .epub download and JSON endpoints). This is a
+    -- read, but it still goes through the same safety guard as every write
+    -- above: it hard-refuses to fetch anything but the one bookmark this run
+    -- created.
+    local function fetch_article_html(bookmark_id)
+        assert_own_bookmark(bookmark_id, "fetch_article_html")
+        local sink = {}
+        socketutil:set_timeout(instance.block_timeout, instance.total_timeout)
+        local code, _, status = socket.skip(
+            1,
+            http.request({
+                method = "GET",
+                url = server_url .. "/api/bookmarks/" .. tostring(bookmark_id) .. "/article",
+                headers = {
+                    ["Authorization"] = "Bearer " .. instance.access_token,
+                    ["Accept"] = "text/html",
+                },
+                sink = socketutil.table_sink(sink),
+            })
+        )
+        socketutil:reset_timeout()
+        if code ~= 200 then
+            return nil, "article HTML GET failed with status " .. tostring(status or code)
+        end
+        return table.concat(sink)
+    end
+
+    -- Derives a usable annotation selector from the real stored article HTML
+    -- instead of hardcoding one (which is what caused the real-server 400
+    -- 'element "..." not found' this probe is meant to catch - Readeck
+    -- resolves the selector against the DOM it actually stored, and a
+    -- hardcoded guess has no relationship to that).
+    --
+    -- ASSUMPTIONS (both checked; the function fails loudly if either does not
+    -- hold instead of silently guessing):
+    --   1. The document root is a single <section> element (optionally
+    --      preceded by whitespace). This matches every article HTML Readeck
+    --      has been observed to store (see the diagnosis in the task/commit
+    --      notes), and is what readeck/annotations/highlights.lua's
+    --      clean_selector already assumes when it strips the
+    --      '/body/DocFragment/body/main/' KOReader prefix down to a bare
+    --      'section/...' path.
+    --   2. That <section>'s first child element is a <p>. The bookmark this
+    --      probe creates is a single throwaway paragraph (see
+    --      DEFAULT_ARTICLE_HTML in spec/mock_readeck_server.py for the mock
+    --      equivalent), so 'section/p[1]' is expected to be its first (and
+    --      typically only) paragraph - but this is verified against the
+    --      actual response text below, not assumed.
+    -- No HTML parser is used (deliberately - see task notes): this is a
+    -- narrow, targeted pattern match proportionate to a known-small, known-
+    -- shaped document, not a general HTML structural validator.
+    local function derive_selector_from_article_html(html)
+        html = tostring(html or "")
+        if not html:match("^%s*<section[^>]*>") then
+            return nil, "article HTML root is not a <section> element (assumption 1 failed)"
+        end
+        local after_section = html:match("^%s*<section[^>]*>%s*(.*)$")
+        if not after_section or not after_section:match("^<p[^>]*>") then
+            return nil, "first child of <section> is not a <p> element (assumption 2 failed)"
+        end
+        return "section/p[1]"
+    end
+
     local test_url = "https://example.com/?readeck-koplugin-write-probe="
         .. tostring(os.time())
         .. "-"
@@ -446,14 +511,42 @@ if os.getenv("READECK_LIVE_WRITE") == "1" then
         end
         assert(write_download_result == Defaults.DOWNLOAD_DONE, "article never became downloadable within timeout")
 
+        -- Derive the annotation selector from the article Readeck actually
+        -- stored (see derive_selector_from_article_html above), rather than
+        -- hardcoding one - a hardcoded selector has no guaranteed relationship
+        -- to the real document and is exactly what produced the 400 "element
+        -- not found" this probe exists to catch.
+        -- Measured against a real 0.23.4 server: article.epub becomes fetchable
+        -- BEFORE the readable article HTML does, and Readeck answers 500 (not
+        -- 404) for the HTML while it is still being stored. So a successful EPUB
+        -- download does not imply /article is ready, and this has to poll on its
+        -- own. Only the probe cares - the plugin itself only ever fetches the
+        -- EPUB, which is the resource that becomes available first.
+        local article_html, article_html_err
+        local html_deadline = socket.gettime() + (tonumber(os.getenv("READECK_LIVE_WRITE_HTML_TIMEOUT")) or 60)
+        repeat
+            article_html, article_html_err = fetch_article_html(created_id)
+            if not article_html then
+                socket.sleep(1)
+            end
+        until article_html or socket.gettime() > html_deadline
+        assert(article_html, "failed to fetch article HTML for selector derivation: " .. tostring(article_html_err))
+        local selector, selector_err = derive_selector_from_article_html(article_html)
+        assert(
+            selector,
+            "could not derive a usable annotation selector from the real article HTML: " .. tostring(selector_err)
+        )
+        print("[write] derived annotation selector from real article HTML:", selector)
+
         -- Export one highlight via the plugin's real export path.
+        local highlight_text = "write-probe text"
         local local_highlight = {
             drawer = "lighten",
-            text = "write-probe text",
+            text = highlight_text,
             note = "write-probe note",
             color = "none",
-            pos0 = "section/p[1].0",
-            pos1 = "section/p[1].16",
+            pos0 = selector .. ".0",
+            pos1 = selector .. "." .. tostring(#highlight_text),
         }
         local export_ok, export_counts = instance:exportHighlightsForArticle(
             created_id,
@@ -495,6 +588,33 @@ if os.getenv("READECK_LIVE_WRITE") == "1" then
             print(
                 "  expected-by-highlights.lua field '" .. field .. "' present:",
                 tostring(remote_annotation[field] ~= nil)
+            )
+        end
+
+        -- Cross-check against spec/mock_readeck_server.py's shape
+        -- (normalize_annotation there returns exactly:
+        -- id, text, note, color, start_selector, start_offset, end_selector,
+        -- end_offset, created - note dropped when notes are unsupported for
+        -- the configured version). Anything the real server omits, renames,
+        -- or types differently versus this list is a mock/reality gap worth
+        -- reporting.
+        local mock_fields = {
+            "id",
+            "text",
+            "note",
+            "color",
+            "start_selector",
+            "start_offset",
+            "end_selector",
+            "end_offset",
+            "created",
+        }
+        for _, field in ipairs(mock_fields) do
+            print(
+                "  field '" .. field .. "' vs mock's shape - present:",
+                tostring(remote_annotation[field] ~= nil),
+                "type:",
+                type(remote_annotation[field])
             )
         end
 
