@@ -5,7 +5,6 @@ local FFIUtil = require("ffi/util")
 local Features = require("readeck.core.features")
 local Highlights = require("readeck.annotations.highlights")
 local InfoMessage = require("ui/widget/infomessage")
-local JSON = require("json")
 local LinkedSync = require("readeck.annotations.linked_sync")
 local NetworkMgr = require("ui/network/manager")
 local UIManager = require("ui/uimanager")
@@ -251,7 +250,8 @@ function Export.install(Readeck, deps)
             return false, add_highlight_counts(new_highlight_counts(), { error = 1 })
         end
 
-        local existing_highlights_raw, err = self:callAPI("GET", Api.paths.annotations(article_id), nil, "", "", true)
+        local existing_highlights_raw, err =
+            self:callAPI({ method = "GET", path = Api.paths.annotations(article_id), quiet = true })
         local existing_highlights = {}
         if err then
             if err == "auth_pending" then
@@ -312,22 +312,19 @@ function Export.install(Readeck, deps)
                             Log:info("Skipping overlapping highlight:", local_highlight.text)
                         end
                     else
-                        local bodyJSON = JSON.encode(local_highlight)
                         Log:debug(
                             "Start selector:",
                             local_highlight.start_selector,
                             "End selector:",
                             local_highlight.end_selector
                         )
-                        local headers = {
-                            ["Content-type"] = "application/json",
-                            ["Accept"] = "application/json, */*",
-                            ["Content-Length"] = tostring(#bodyJSON),
-                            ["Authorization"] = "Bearer " .. self.access_token,
-                        }
 
-                        local result =
-                            self:callAPI("POST", Api.paths.annotations(article_id), headers, bodyJSON, "", true)
+                        local result = self:callAPI({
+                            method = "POST",
+                            path = Api.paths.annotations(article_id),
+                            body = local_highlight,
+                            quiet = true,
+                        })
                         if result then
                             counts.success = counts.success + 1
                             if type(result) == "table" and result.id then

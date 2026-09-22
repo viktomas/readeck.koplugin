@@ -30,7 +30,7 @@ function OAuth.install(Readeck, deps)
         if type(self.server_info) == "table" and not force then
             return self.server_info
         end
-        local info, err = self:callAPI("GET", Api.paths.info, {}, "", "", true)
+        local info, err = self:callAPI({ method = "GET", path = Api.paths.info, headers = {}, quiet = true })
         if type(info) == "table" then
             self.server_info = info
             self:saveSettings()

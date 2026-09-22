@@ -804,7 +804,8 @@ describe("KOReader smoke", function()
             getArticleID = function()
                 return "abc123"
             end,
-            callAPI = function(_, method, path)
+            callAPI = function(_, opts)
+                local method, path = opts.method, opts.path
                 if method == "GET" and path == "/api/bookmarks/abc123/annotations" then
                     return {
                         {
@@ -850,7 +851,8 @@ describe("KOReader smoke", function()
             getBearerToken = function()
                 return true
             end,
-            callAPI = function(_, method, path)
+            callAPI = function(_, opts)
+                local method, path = opts.method, opts.path
                 if method == "GET" and path == "/api/bookmarks/abc123/annotations" then
                     return {}
                 end
@@ -924,7 +926,8 @@ describe("KOReader smoke", function()
             getArticleID = function()
                 return "abc123"
             end,
-            callAPI = function(_, method, path)
+            callAPI = function(_, opts)
+                local method, path = opts.method, opts.path
                 if method == "GET" and path == "/api/bookmarks/abc123/annotations" then
                     return {}
                 end
@@ -1081,7 +1084,8 @@ describe("KOReader smoke", function()
             getArticleID = function()
                 return "abc123"
             end,
-            callAPI = function(_, method, path)
+            callAPI = function(_, opts)
+                local method, path = opts.method, opts.path
                 if method == "GET" and path == "/api/bookmarks/abc123/annotations" then
                     return {
                         {
@@ -1154,7 +1158,8 @@ describe("KOReader smoke", function()
             getBearerToken = function()
                 return true
             end,
-            callAPI = function(_, method, path)
+            callAPI = function(_, opts)
+                local method, path = opts.method, opts.path
                 if method == "GET" and path == "/api/bookmarks/abc123/annotations" then
                     return {
                         {
@@ -1171,6 +1176,7 @@ describe("KOReader smoke", function()
                 end
                 if method == "PATCH" then
                     patch_path = path
+                    encoded_body = opts.body
                     return {
                         annotations = {
                             {
@@ -1233,11 +1239,13 @@ describe("KOReader smoke", function()
                 self.server_info = { version = { canonical = "0.22.3" } }
                 return self.server_info
             end,
-            callAPI = function(_, method, path)
+            callAPI = function(_, opts)
+                local method, path = opts.method, opts.path
                 if method == "GET" and path == "/api/bookmarks/abc123/annotations" then
                     return {}
                 end
                 if method == "POST" and path == "/api/bookmarks/abc123/annotations" then
+                    encoded_body = opts.body
                     return { id = "created-remote-id", note = encoded_body.note, color = encoded_body.color }
                 end
                 return true
@@ -1633,7 +1641,8 @@ describe("KOReader smoke", function()
             syncHighlightsForPath = function()
                 return true
             end,
-            callAPI = function(_, method, path)
+            callAPI = function(_, opts)
+                local method, path = opts.method, opts.path
                 table.insert(api_calls, { method = method, path = path })
                 return true
             end,
@@ -1676,20 +1685,7 @@ describe("KOReader smoke", function()
         package.path = "./readeck.koplugin/?.lua;" .. package.path
         install_koreader_stubs()
         local article_path = "/tmp/readeck/In progress [rd-id_abc123].epub"
-        local encoded_body
 
-        package.loaded["json"] = nil
-        package.preload["json"] = function()
-            return {
-                encode = function(body)
-                    encoded_body = body
-                    return "{}"
-                end,
-                decode = function()
-                    return {}
-                end,
-            }
-        end
         package.loaded["docsettings"] = nil
         package.preload["docsettings"] = function()
             return {
@@ -1754,8 +1750,9 @@ describe("KOReader smoke", function()
             getBearerToken = function()
                 return true
             end,
-            callAPI = function(_, method, path)
-                table.insert(api_calls, { method = method, path = path })
+            callAPI = function(_, opts)
+                local method, path, body = opts.method, opts.path, opts.body
+                table.insert(api_calls, { method = method, path = path, body = body })
                 return true
             end,
         }, { __index = Readeck })
@@ -1766,27 +1763,14 @@ describe("KOReader smoke", function()
         assert.are.equal(1, #api_calls)
         assert.are.equal("PATCH", api_calls[1].method)
         assert.are.equal("/api/bookmarks/abc123", api_calls[1].path)
-        assert.are.equal(37, encoded_body.read_progress)
+        assert.are.equal(37, api_calls[1].body.read_progress)
     end)
 
     it("syncs reading progress even when sync completion actions are disabled", function()
         package.path = "./readeck.koplugin/?.lua;" .. package.path
         install_koreader_stubs()
         local article_path = "/tmp/readeck/Still reading [rd-id_progress123].epub"
-        local encoded_body
 
-        package.loaded["json"] = nil
-        package.preload["json"] = function()
-            return {
-                encode = function(body)
-                    encoded_body = body
-                    return "{}"
-                end,
-                decode = function()
-                    return {}
-                end,
-            }
-        end
         package.loaded["docsettings"] = nil
         package.preload["docsettings"] = function()
             return {
@@ -1851,8 +1835,9 @@ describe("KOReader smoke", function()
             getBearerToken = function()
                 return true
             end,
-            callAPI = function(_, method, path)
-                table.insert(api_calls, { method = method, path = path })
+            callAPI = function(_, opts)
+                local method, path, body = opts.method, opts.path, opts.body
+                table.insert(api_calls, { method = method, path = path, body = body })
                 return true
             end,
         }, { __index = Readeck })
@@ -1864,7 +1849,7 @@ describe("KOReader smoke", function()
         assert.are.equal(1, #api_calls)
         assert.are.equal("PATCH", api_calls[1].method)
         assert.are.equal("/api/bookmarks/progress123", api_calls[1].path)
-        assert.are.equal(42, encoded_body.read_progress)
+        assert.are.equal(42, api_calls[1].body.read_progress)
     end)
 
     it("does not sync 100 percent progress as a regular progress update", function()
@@ -1935,7 +1920,8 @@ describe("KOReader smoke", function()
             getBearerToken = function()
                 return true
             end,
-            callAPI = function(_, method, path)
+            callAPI = function(_, opts)
+                local method, path = opts.method, opts.path
                 table.insert(api_calls, { method = method, path = path })
                 return true
             end,

@@ -3,7 +3,6 @@ local DocSettings = require("docsettings")
 local FFIUtil = require("ffi/util")
 local FileManager = require("apps/filemanager/filemanager")
 local InfoMessage = require("ui/widget/infomessage")
-local JSON = require("json")
 local Math = require("optmath")
 local NetworkMgr = require("ui/network/manager")
 local Progress = require("readeck.sync.progress")
@@ -219,16 +218,10 @@ function LocalActions.install(Readeck, deps)
             return counts
         end
 
-        local bodyJSON = JSON.encode({
+        local body = {
             read_progress = math.max(0, math.min(100, Math.round(progress))),
-        })
-        local headers = {
-            ["Content-type"] = "application/json",
-            ["Accept"] = "application/json, */*",
-            ["Content-Length"] = tostring(#bodyJSON),
-            ["Authorization"] = "Bearer " .. self.access_token,
         }
-        local remote_ok = self:callAPI("PATCH", Api.paths.bookmark(id), headers, bodyJSON, "")
+        local remote_ok = self:callAPI({ method = "PATCH", path = Api.paths.bookmark(id), body = body })
         if remote_ok then
             counts.remote_progress_updated = counts.remote_progress_updated + 1
         else
@@ -271,16 +264,7 @@ function LocalActions.install(Readeck, deps)
             body.labels = tags
         end
 
-        local body_JSON = JSON.encode(body)
-
-        local headers = {
-            ["Content-type"] = "application/json",
-            ["Accept"] = "application/json, */*",
-            ["Content-Length"] = tostring(#body_JSON),
-            ["Authorization"] = "Bearer " .. self.access_token,
-        }
-
-        return self:callAPI("POST", Api.paths.bookmarks, headers, body_JSON, "")
+        return self:callAPI({ method = "POST", path = Api.paths.bookmarks, body = body })
     end
 
     function Readeck:addTags(path)
@@ -302,16 +286,7 @@ function LocalActions.install(Readeck, deps)
                     add_labels = tags,
                 }
 
-                local bodyJSON = JSON.encode(body)
-
-                local headers = {
-                    ["Content-type"] = "application/json",
-                    ["Accept"] = "application/json, */*",
-                    ["Content-Length"] = tostring(#bodyJSON),
-                    ["Authorization"] = "Bearer " .. self.access_token,
-                }
-
-                self:callAPI("PATCH", Api.paths.bookmark(id), headers, bodyJSON, "")
+                self:callAPI({ method = "PATCH", path = Api.paths.bookmark(id), body = body })
             else
                 Log:debug("No tags to send for", path)
             end
@@ -351,21 +326,12 @@ function LocalActions.install(Readeck, deps)
                         end
                     end
                 end
-                local bodyJSON = JSON.encode(body)
-
-                local headers = {
-                    ["Content-type"] = "application/json",
-                    ["Accept"] = "application/json, */*",
-                    ["Content-Length"] = tostring(#bodyJSON),
-                    ["Authorization"] = "Bearer " .. self.access_token,
-                }
-
-                remote_ok = self:callAPI("PATCH", Api.paths.bookmark(id), headers, bodyJSON, "")
+                remote_ok = self:callAPI({ method = "PATCH", path = Api.paths.bookmark(id), body = body })
                 if remote_ok then
                     counts.remote_archived = counts.remote_archived + 1
                 end
             else
-                remote_ok = self:callAPI("DELETE", Api.paths.bookmark(id), nil, "", "")
+                remote_ok = self:callAPI({ method = "DELETE", path = Api.paths.bookmark(id) })
                 if remote_ok then
                     counts.remote_deleted = counts.remote_deleted + 1
                 end

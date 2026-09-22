@@ -1,6 +1,5 @@
 local Api = require("readeck.net.api")
 local Highlights = require("readeck.annotations.highlights")
-local JSON = require("json")
 
 local LinkedSync = {}
 
@@ -38,14 +37,12 @@ function LinkedSync.extract_updated_remote(result, annotation_id)
 end
 
 function LinkedSync.patch_remote(plugin, article_id, annotation_id, update_payload)
-    local bodyJSON = JSON.encode(update_payload)
-    local headers = {
-        ["Content-type"] = "application/json",
-        ["Accept"] = "application/json, */*",
-        ["Content-Length"] = tostring(#bodyJSON),
-        ["Authorization"] = "Bearer " .. plugin.access_token,
-    }
-    return plugin:callAPI("PATCH", Api.paths.annotation(article_id, annotation_id), headers, bodyJSON, "", true)
+    return plugin:callAPI({
+        method = "PATCH",
+        path = Api.paths.annotation(article_id, annotation_id),
+        body = update_payload,
+        quiet = true,
+    })
 end
 
 function LinkedSync.apply_plan(local_highlight, plan, profile)

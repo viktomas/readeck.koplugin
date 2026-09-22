@@ -433,7 +433,7 @@ function Downloads.install(Readeck, deps)
     function Readeck:download(article)
         local local_path, item_url = self:getDownloadTarget(article)
         if not self:shouldSkipDownload(local_path, article) then
-            local ok, err, code = self:callAPI("GET", item_url, nil, "", local_path)
+            local ok, err, code = self:callAPI({ method = "GET", path = item_url, filepath = local_path })
             if ok then
                 self:applyDownloadedArticleMetadata(local_path, article)
                 self:syncReadingProgressFromRemote(local_path, article)

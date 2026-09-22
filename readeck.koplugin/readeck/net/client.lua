@@ -29,7 +29,23 @@ function Client.install(Readeck, deps)
         end
     end
 
-    function Readeck:callAPI(method, apiurl, headers, body, filepath, quiet, retry_auth)
+    function Readeck:callAPI(opts)
+        local method = opts.method
+        local apiurl = opts.path
+        local body = opts.body
+
+        -- Copy so that request-specific defaults never leak back into a caller's table.
+        local headers = nil
+        if opts.headers ~= nil then
+            headers = {}
+            for key, value in pairs(opts.headers) do
+                headers[key] = value
+            end
+        end
+        local filepath = opts.filepath
+        local quiet = opts.quiet
+        local retry_auth = opts.retry_auth
+
         local sink = {}
         local request = {}
 
@@ -49,7 +65,18 @@ function Client.install(Readeck, deps)
 
         request.method = method
 
-        if filepath ~= "" then
+        local body_source = nil
+        if type(body) == "table" then
+            local body_json = JSON.encode(body)
+            headers["Content-type"] = headers["Content-type"] or "application/json"
+            headers["Accept"] = headers["Accept"] or "application/json, */*"
+            headers["Content-Length"] = headers["Content-Length"] or tostring(#body_json)
+            body_source = body_json
+        elseif type(body) == "string" then
+            body_source = body
+        end
+
+        if filepath ~= nil then
             local file, open_err = io.open(filepath, "wb")
             if not file then
                 Log:error("Could not open response file:", filepath, open_err or "")
@@ -62,8 +89,8 @@ function Client.install(Readeck, deps)
             request.sink = socketutil.table_sink(sink)
         end
         request.headers = headers
-        if body ~= "" then
-            request.source = ltn12.source.string(body)
+        if body_source ~= nil then
+            request.source = ltn12.source.string(body_source)
         end
         Log:debug("API request - URL:", request.url, "Method:", method)
 
@@ -106,7 +133,15 @@ function Client.install(Readeck, deps)
                 on_oauth_success = oauth_success_callback,
             }) then
                 Log:info("Token refreshed, retrying API call")
-                return self:callAPI(method, apiurl, nil, body, filepath, quiet, true)
+                return self:callAPI({
+                    method = method,
+                    path = apiurl,
+                    headers = nil,
+                    body = body,
+                    filepath = filepath,
+                    quiet = quiet,
+                    retry_auth = true,
+                })
             elseif self:isOAuthPollingActive() then
                 Log:info("OAuth authorization flow started after auth failure")
                 return nil, "auth_pending", code
@@ -122,7 +157,7 @@ function Client.install(Readeck, deps)
         end
 
         if code == 200 or code == 201 or code == 202 or code == 204 then
-            if filepath ~= "" then
+            if filepath ~= nil then
                 Log:info("File downloaded successfully to", filepath)
                 return true
             else
@@ -163,11 +198,11 @@ function Client.install(Readeck, deps)
                 return nil, "json_error"
             end
         else
-            local error_content = filepath == "" and table.concat(sink) or ""
+            local error_content = filepath == nil and table.concat(sink) or ""
             if error_content ~= "" and #error_content < 1000 then
                 Log:debug("Error response content:", error_content)
             end
-            if filepath ~= "" then
+            if filepath ~= nil then
                 local entry_mode = lfs.attributes(filepath, "mode")
                 if entry_mode == "file" then
                     os.remove(filepath)

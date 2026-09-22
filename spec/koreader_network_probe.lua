@@ -117,7 +117,7 @@ assert(counts.updated_remote == 1, "linked local highlight update was not patche
 assert(counts.remote_deleted == 1, "remote deletion policy was not applied")
 assert(local_annotations[1].readeck_annotation_id == "created-1", "exported annotation id was not retained")
 
-local state = instance:callAPI("GET", server_url .. "/__state", {}, "", "", true)
+local state = instance:callAPI({ method = "GET", path = server_url .. "/__state", headers = {}, quiet = true })
 assert(state and state.oauth_token_requests == 1, "mock OAuth token endpoint was not hit")
 assert(#state.oauth_clients == 1, "unexpected number of OAuth client registration requests")
 assert(
