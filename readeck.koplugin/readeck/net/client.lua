@@ -1,5 +1,4 @@
 local Api = require("readeck.net.api")
-local InfoMessage = require("ui/widget/infomessage")
 local JSON = require("json")
 local UIManager = require("ui/uimanager")
 local http = require("socket.http")
@@ -11,7 +10,6 @@ local socketutil = require("socketutil")
 local Client = {}
 
 function Client.install(Readeck, deps)
-    local L = deps.L
     local Log = deps.Log
 
     function Readeck:wrapSinkWithUIRefresh(sink)
@@ -43,7 +41,6 @@ function Client.install(Readeck, deps)
             end
         end
         local filepath = opts.filepath
-        local quiet = opts.quiet
         local retry_auth = opts.retry_auth
 
         local sink = {}
@@ -139,7 +136,6 @@ function Client.install(Readeck, deps)
                     headers = nil,
                     body = body,
                     filepath = filepath,
-                    quiet = quiet,
                     retry_auth = true,
                 })
             elseif self:isOAuthPollingActive() then
@@ -147,11 +143,6 @@ function Client.install(Readeck, deps)
                 return nil, "auth_pending", code
             else
                 Log:error("Failed to refresh token")
-                if not quiet then
-                    UIManager:show(InfoMessage:new({
-                        text = L("Authentication failed. Please check your OAuth or API token settings."),
-                    }))
-                end
                 return nil, "auth_error", code
             end
         end
@@ -178,22 +169,12 @@ function Client.install(Readeck, deps)
                         return result
                     else
                         Log:error("Failed to parse JSON:", result or "unknown error")
-                        if not quiet then
-                            UIManager:show(InfoMessage:new({
-                                text = L("Server response is not valid."),
-                            }))
-                        end
                     end
                 elseif content == "" then
                     Log:debug("Empty response with successful status code")
                     return true
                 else
                     Log:error("Response is not valid JSON")
-                    if not quiet then
-                        UIManager:show(InfoMessage:new({
-                            text = L("Server response is not valid."),
-                        }))
-                    end
                 end
                 return nil, "json_error"
             end
@@ -208,11 +189,8 @@ function Client.install(Readeck, deps)
                     os.remove(filepath)
                     Log:warn("Removed failed download:", filepath)
                 end
-            elseif not quiet then
+            else
                 Log:error("Communication with server failed:", code)
-                UIManager:show(InfoMessage:new({
-                    text = L("Communication with server failed."),
-                }))
             end
             Log:error("Request failed:", status or code, "URL:", request.url)
             return nil, "http_error", code

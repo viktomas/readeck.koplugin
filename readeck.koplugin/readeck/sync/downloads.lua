@@ -439,6 +439,9 @@ function Downloads.install(Readeck, deps)
                 self:syncReadingProgressFromRemote(local_path, article)
                 return downloaded
             end
+            if err == "auth_error" then
+                self:showAPIError(err)
+            end
             Log:warn("Article download failed:", article.id, err or "unknown", code or "")
             return failed
         end

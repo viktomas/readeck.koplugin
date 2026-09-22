@@ -41,7 +41,6 @@ function LinkedSync.patch_remote(plugin, article_id, annotation_id, update_paylo
         method = "PATCH",
         path = Api.paths.annotation(article_id, annotation_id),
         body = update_payload,
-        quiet = true,
     })
 end
 

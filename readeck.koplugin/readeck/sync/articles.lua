@@ -52,7 +52,7 @@ function Articles.install(Readeck, deps)
             })
 
             Log:debug("Fetching article list with URL:", articles_url)
-            local articles_json, err, code = self:callAPI({ method = "GET", path = articles_url, quiet = true })
+            local articles_json, err, code = self:callAPI({ method = "GET", path = articles_url })
 
             if err == "http_error" and code == 404 then
                 Log:debug("Couldn't get offset", offset)

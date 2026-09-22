@@ -221,10 +221,11 @@ function LocalActions.install(Readeck, deps)
         local body = {
             read_progress = math.max(0, math.min(100, Math.round(progress))),
         }
-        local remote_ok = self:callAPI({ method = "PATCH", path = Api.paths.bookmark(id), body = body })
+        local remote_ok, err = self:callAPI({ method = "PATCH", path = Api.paths.bookmark(id), body = body })
         if remote_ok then
             counts.remote_progress_updated = counts.remote_progress_updated + 1
         else
+            self:showAPIError(err)
             counts.failed = counts.failed + 1
         end
         return counts
@@ -264,7 +265,11 @@ function LocalActions.install(Readeck, deps)
             body.labels = tags
         end
 
-        return self:callAPI({ method = "POST", path = Api.paths.bookmarks, body = body })
+        local result, err = self:callAPI({ method = "POST", path = Api.paths.bookmarks, body = body })
+        if not result then
+            self:showAPIError(err)
+        end
+        return result, err
     end
 
     function Readeck:addTags(path)
@@ -286,7 +291,10 @@ function LocalActions.install(Readeck, deps)
                     add_labels = tags,
                 }
 
-                self:callAPI({ method = "PATCH", path = Api.paths.bookmark(id), body = body })
+                local _, err = self:callAPI({ method = "PATCH", path = Api.paths.bookmark(id), body = body })
+                if err then
+                    self:showAPIError(err)
+                end
             else
                 Log:debug("No tags to send for", path)
             end
@@ -326,14 +334,20 @@ function LocalActions.install(Readeck, deps)
                         end
                     end
                 end
-                remote_ok = self:callAPI({ method = "PATCH", path = Api.paths.bookmark(id), body = body })
+                local err
+                remote_ok, err = self:callAPI({ method = "PATCH", path = Api.paths.bookmark(id), body = body })
                 if remote_ok then
                     counts.remote_archived = counts.remote_archived + 1
+                else
+                    self:showAPIError(err)
                 end
             else
-                remote_ok = self:callAPI({ method = "DELETE", path = Api.paths.bookmark(id) })
+                local err
+                remote_ok, err = self:callAPI({ method = "DELETE", path = Api.paths.bookmark(id) })
                 if remote_ok then
                     counts.remote_deleted = counts.remote_deleted + 1
+                else
+                    self:showAPIError(err)
                 end
             end
             if remote_ok then

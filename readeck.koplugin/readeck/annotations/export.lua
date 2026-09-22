@@ -250,8 +250,7 @@ function Export.install(Readeck, deps)
             return false, add_highlight_counts(new_highlight_counts(), { error = 1 })
         end
 
-        local existing_highlights_raw, err =
-            self:callAPI({ method = "GET", path = Api.paths.annotations(article_id), quiet = true })
+        local existing_highlights_raw, err = self:callAPI({ method = "GET", path = Api.paths.annotations(article_id) })
         local existing_highlights = {}
         if err then
             if err == "auth_pending" then
@@ -323,7 +322,6 @@ function Export.install(Readeck, deps)
                             method = "POST",
                             path = Api.paths.annotations(article_id),
                             body = local_highlight,
-                            quiet = true,
                         })
                         if result then
                             counts.success = counts.success + 1

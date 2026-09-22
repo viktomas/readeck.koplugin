@@ -1,10 +1,30 @@
+local InfoMessage = require("ui/widget/infomessage")
 local Status = require("readeck.sync.status")
+local UIManager = require("ui/uimanager")
 
 local StatusMessages = {}
 
 function StatusMessages.install(Readeck, deps)
     local L = deps.L
     local T = deps.T
+
+    function Readeck:formatAPIErrorMessage(err)
+        if err == "auth_error" then
+            return L("Authentication failed. Please check your OAuth or API token settings.")
+        elseif err == "json_error" then
+            return L("Server response is not valid.")
+        elseif err == "http_error" then
+            return L("Communication with server failed.")
+        end
+        return nil
+    end
+
+    function Readeck:showAPIError(err)
+        local text = self:formatAPIErrorMessage(err)
+        if text then
+            UIManager:show(InfoMessage:new({ text = text }))
+        end
+    end
 
     function Readeck:formatLocalProcessingMessage(counts)
         counts = counts or Status.new_counts()
