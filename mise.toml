@@ -88,11 +88,44 @@ run_probe 0.22.2 18080 0
 run_probe 0.22.1 18081 1
 """
 
+[tasks.emulator-seed]
+description = "Write the emulator's readeck.lua settings from READECK_URL/READECK_TOKEN so you do not have to type a token into the emulator UI"
+run = """
+set -e
+if [ -z "$READECK_URL" ] || [ -z "$READECK_TOKEN" ]; then
+    echo "Set READECK_URL and READECK_TOKEN, e.g." >&2
+    echo "  READECK_URL=http://n:8112 READECK_TOKEN=... mise run emulator-seed" >&2
+    exit 1
+fi
+BUILD_DIR="$(echo references/koreader/koreader-emulator-*/koreader | head -1)"
+DOWNLOAD_DIR="${READECK_DOWNLOAD_DIR:-$HOME/readeck-emulator-articles}"
+mkdir -p "$DOWNLOAD_DIR" "$BUILD_DIR/settings"
+cat > "$BUILD_DIR/settings/readeck.lua" <<LUA
+-- Written by 'mise run emulator-seed'. Safe to delete.
+return {
+    ["readeck"] = {
+        ["server_url"] = "$READECK_URL",
+        ["auth_token"] = "$READECK_TOKEN",
+        ["directory"] = "$DOWNLOAD_DIR/",
+        ["log_level"] = "debug",
+    },
+}
+LUA
+echo "Seeded $BUILD_DIR/settings/readeck.lua"
+echo "  server:    $READECK_URL"
+echo "  downloads: $DOWNLOAD_DIR/"
+"""
+
 [tasks.emulator-run]
 description = "Start the emulator with this plugin symlinked into its plugins dir"
 run = """
 set -e
 BUILD_DIR="$(echo references/koreader/koreader-emulator-*/koreader | head -1)"
 ln -sfn "{{config_root}}/readeck.koplugin" "$BUILD_DIR/plugins/readeck.koplugin"
-cd references/koreader && ./kodev run
+cd references/koreader
+# kodev parses its arguments with getopt(1); macOS ships a BSD getopt that it
+# rejects outright ("unsupported getopt version"), so the Homebrew GNU tools
+# have to come first on PATH exactly as they do for emulator-build.
+export PATH="$(brew --prefix)/opt/gnu-getopt/bin:$(brew --prefix)/opt/findutils/libexec/gnubin:$(brew --prefix)/opt/make/libexec/gnubin:$(brew --prefix)/opt/util-linux/bin:$PATH"
+./kodev run
 """
