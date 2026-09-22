@@ -11,14 +11,21 @@ function StatusMessages.install(Readeck, deps)
 
     function Readeck:formatAPIErrorMessage(err)
         local kind = err and err.kind
+        local text
         if kind == Errors.KIND.AUTH_ERROR then
-            return L("Authentication failed. Please check your OAuth or API token settings.")
+            text = L("Authentication failed. Please check your OAuth or API token settings.")
         elseif kind == Errors.KIND.JSON_ERROR then
-            return L("Server response is not valid.")
+            text = L("Server response is not valid.")
         elseif kind == Errors.KIND.HTTP_ERROR then
-            return L("Communication with server failed.")
+            text = L("Communication with server failed.")
+        else
+            return nil
         end
-        return nil
+        -- The server's own wording is untranslated, so frame it rather than show it bare.
+        if err.message then
+            text = text .. "\n" .. T(L("Server said: %1"), err.message)
+        end
+        return text
     end
 
     function Readeck:showAPIError(err)

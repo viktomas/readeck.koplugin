@@ -31,10 +31,21 @@ end
 local function add_highlight_counts(target, source)
     target = target or new_highlight_counts()
     for key, value in pairs(source or {}) do
-        target[key] = (target[key] or 0) + (tonumber(value) or 0)
+        if type(value) == "string" then
+            -- Reasons (error_message) are text, not tallies: keep the first one
+            -- instead of coercing it to 0 the way a count would be.
+            if target[key] == nil then
+                target[key] = value
+            end
+        else
+            target[key] = (target[key] or 0) + (tonumber(value) or 0)
+        end
     end
     return target
 end
+
+-- Exposed for tests: the merge rule for text reasons is easy to break silently.
+Export.add_highlight_counts = add_highlight_counts
 
 function Export.install(Readeck, deps)
     local L = deps.L
@@ -200,7 +211,11 @@ function Export.install(Readeck, deps)
             table.insert(message_parts, T(L("Exported: %1"), counts.success))
         end
         if (counts.error or 0) > 0 then
-            table.insert(message_parts, T(L("Failed: %1"), counts.error))
+            if counts.error_message then
+                table.insert(message_parts, T(L("Failed: %1 (%2)"), counts.error, counts.error_message))
+            else
+                table.insert(message_parts, T(L("Failed: %1"), counts.error))
+            end
         end
         if (counts.skipped or 0) > 0 then
             table.insert(message_parts, T(L("Skipped (overlap): %1"), counts.skipped))
@@ -318,7 +333,7 @@ function Export.install(Readeck, deps)
                             local_highlight.end_selector
                         )
 
-                        local result = self:getApi():create_annotation(article_id, local_highlight)
+                        local result, export_err = self:getApi():create_annotation(article_id, local_highlight)
                         if result then
                             counts.success = counts.success + 1
                             if type(result) == "table" and result.id then
@@ -341,6 +356,14 @@ function Export.install(Readeck, deps)
                             end
                         else
                             counts.error = counts.error + 1
+                            -- Keep the first reason: one concrete cause beats a bare count.
+                            if not counts.error_message and export_err and export_err.message then
+                                counts.error_message = export_err.message
+                            end
+                            Log:warn(
+                                "Highlight export rejected:",
+                                export_err and export_err.message or (export_err and export_err.kind) or "unknown"
+                            )
                         end
                     end
                 end

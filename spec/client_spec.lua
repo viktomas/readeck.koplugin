@@ -20,6 +20,10 @@ local function build_instance(responses, overrides)
                 table.insert(http_calls, request)
                 local resp = table.remove(responses, 1)
                 assert(resp, "no scripted HTTP response left for request #" .. #http_calls)
+                if resp.body and request.sink then
+                    request.sink(resp.body)
+                    request.sink(nil)
+                end
                 -- The fake `socket.skip` used by the test stubs discards the
                 -- leading `n` literal (not `n` values), so `http.request`
                 -- must return exactly (code, headers, status) here for
@@ -37,9 +41,9 @@ local function build_instance(responses, overrides)
                 table.insert(encoded_bodies, body)
                 return "{}"
             end,
-            decode = function()
-                return {}
-            end,
+            -- Decode for real: the error-message path depends on the shape of
+            -- the body, so a stub that always returns {} would prove nothing.
+            decode = require("dkjson").decode,
         }
     end
 
@@ -286,5 +290,48 @@ describe("Readeck:callAPI 401/403 refresh-and-retry", function()
 
         assert.is.truthy(received_options)
         assert.is_nil(received_options.on_oauth_success)
+    end)
+end)
+
+-- Without these, a rejected highlight is indistinguishable from a network drop:
+-- the reason Readeck gives is read for a debug log line and then thrown away.
+describe("Readeck:callAPI error messages", function()
+    it("carries the message of a 400 rejection into the error table", function()
+        local instance = build_instance({
+            {
+                code = 400,
+                status = "400 Bad Request",
+                body = '{"status":400,"message":"element \\"section/p[1]\\" not found"}',
+            },
+        })
+
+        local result, err = instance:callAPI({ method = "POST", path = "/api/bookmarks/x/annotations" })
+
+        assert.is_nil(result)
+        assert.are.equal("http_error", err.kind)
+        assert.are.equal(400, err.code)
+        assert.are.equal('element "section/p[1]" not found', err.message)
+    end)
+
+    it("carries field errors of a 422 that has no top-level message", function()
+        local instance = build_instance({
+            {
+                code = 422,
+                body = '{"is_valid":false,"fields":{"url":{"value":"","errors":["field is required"]}}}',
+            },
+        })
+
+        local _, err = instance:callAPI({ method = "POST", path = "/api/bookmarks" })
+
+        assert.are.equal("url: field is required", err.message)
+    end)
+
+    it("leaves message nil when the server explains nothing", function()
+        local instance = build_instance({ { code = 500, body = "" } })
+
+        local _, err = instance:callAPI({ method = "GET", path = "/api/bookmarks" })
+
+        assert.are.equal("http_error", err.kind)
+        assert.is_nil(err.message)
     end)
 end)

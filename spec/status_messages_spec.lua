@@ -10,8 +10,13 @@ describe("readeck.ui.status_messages", function()
             L = function(text)
                 return text
             end,
-            T = function(text)
-                return text
+            T = function(text, ...)
+                local args = { ... }
+                return (
+                    text:gsub("%%(%d)", function(index)
+                        return tostring(args[tonumber(index)])
+                    end)
+                )
             end,
         })
         return Readeck
@@ -38,6 +43,23 @@ describe("readeck.ui.status_messages", function()
         assert.are.equal(
             "Communication with server failed.",
             readeck:formatAPIErrorMessage(Errors.new(Errors.KIND.HTTP_ERROR))
+        )
+    end)
+
+    it("appends the server's own reason, framed by a translated label", function()
+        local readeck = new_readeck()
+        local err = Errors.new(Errors.KIND.HTTP_ERROR, 400, "400 Bad Request", 'element "section/p[1]" not found')
+        assert.are.equal(
+            'Communication with server failed.\nServer said: element "section/p[1]" not found',
+            readeck:formatAPIErrorMessage(err)
+        )
+    end)
+
+    it("stays a bare message when the server explained nothing", function()
+        local readeck = new_readeck()
+        assert.are.equal(
+            "Communication with server failed.",
+            readeck:formatAPIErrorMessage(Errors.new(Errors.KIND.HTTP_ERROR, 500))
         )
     end)
 

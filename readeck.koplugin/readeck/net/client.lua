@@ -193,6 +193,10 @@ function Client.install(Readeck, deps)
             if error_content ~= "" and #error_content < 1000 then
                 Log:debug("Error response content:", error_content)
             end
+            local error_message = Errors.message_from_body(error_content, JSON.decode)
+            if error_message then
+                Log:error("Server rejected the request:", error_message)
+            end
             if filepath ~= nil then
                 local entry_mode = lfs.attributes(filepath, "mode")
                 if entry_mode == "file" then
@@ -203,7 +207,7 @@ function Client.install(Readeck, deps)
                 Log:error("Communication with server failed:", code)
             end
             Log:error("Request failed:", status or code, "URL:", request.url)
-            return nil, Errors.new(Errors.KIND.HTTP_ERROR, code, status)
+            return nil, Errors.new(Errors.KIND.HTTP_ERROR, code, status, error_message)
         end
     end
 end
