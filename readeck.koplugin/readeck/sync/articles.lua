@@ -1,4 +1,5 @@
 local Api = require("readeck.net.api")
+local ArticleReadiness = require("readeck.core.article_readiness")
 local Errors = require("readeck.net.errors")
 local InfoMessage = require("ui/widget/infomessage")
 local JSON = require("json")
@@ -272,6 +273,31 @@ function Articles.install(Readeck, deps)
         return filtered_list
     end
 
+    -- Drops bookmarks whose article content is not (yet) downloadable and
+    -- tallies why, so downloads.lua never has to distinguish "still being
+    -- processed by Readeck" from a real download failure. See
+    -- readeck.core.article_readiness for the classification rules.
+    function Readeck:filterUnreadyArticles(article_list)
+        self.sync_articles_not_ready = 0
+        self.sync_articles_extraction_failed = 0
+        local filtered_list = {}
+        for _, article in ipairs(article_list) do
+            local readiness = ArticleReadiness.classify(article)
+            if readiness == ArticleReadiness.READY then
+                table.insert(filtered_list, article)
+            elseif readiness == ArticleReadiness.PENDING then
+                self.sync_articles_not_ready = (self.sync_articles_not_ready or 0) + 1
+                Log:debug("Article not ready yet on Readeck, retrying next sync:", article.id, article.title)
+            elseif readiness == ArticleReadiness.ERROR then
+                self.sync_articles_extraction_failed = (self.sync_articles_extraction_failed or 0) + 1
+                Log:debug("Article extraction failed on Readeck, will not retry:", article.id, article.title)
+            else
+                Log:debug("Article marked deleted on Readeck, skipping:", article.id, article.title)
+            end
+        end
+        return filtered_list
+    end
+
     function Readeck:filterArticlesProcessedEarlierInSync(articles, processed_article_ids)
         if type(processed_article_ids) ~= "table" then
             return articles
@@ -345,6 +371,14 @@ function Articles.install(Readeck, deps)
             action_counts.highlights_failed = (highlight_counts.error or 0) + (highlight_counts.import_failed or 0)
         end
         articles = self:filterArticlesProcessedEarlierInSync(articles, action_counts.processed_article_ids)
+        -- Bookmarks that are still loading, permanently failed extraction, or
+        -- pending deletion on Readeck still count as "exists remotely" for
+        -- the "remove local files missing from Readeck" cleanup below; only
+        -- the download step itself needs the readiness filter.
+        local articles_by_id = self:indexArticlesByID(articles)
+        articles = self:filterUnreadyArticles(articles)
+        action_counts.article_not_ready = self.sync_articles_not_ready or 0
+        action_counts.article_extraction_failed = self.sync_articles_extraction_failed or 0
         Log:debug("Number of articles:", #articles)
 
         local info = self:showSyncStatus(L("Checking articles…"))
@@ -353,13 +387,13 @@ function Articles.install(Readeck, deps)
             self.local_progress_updates_in_sync = 0
             self:downloadArticlesAsync(articles, {
                 action_counts = action_counts,
-                on_finish = function(download_counts, remote_article_ids)
+                on_finish = function(download_counts)
                     if (self.local_progress_updates_in_sync or 0) > 0 then
                         action_counts.local_progress_updated = (action_counts.local_progress_updated or 0)
                             + self.local_progress_updates_in_sync
                     end
                     self.local_progress_updates_in_sync = 0
-                    Status.add(action_counts, self:processRemoteDeletes(remote_article_ids))
+                    Status.add(action_counts, self:processRemoteDeletes(articles_by_id))
 
                     UIManager:show(InfoMessage:new({
                         text = self:formatSyncMessage(

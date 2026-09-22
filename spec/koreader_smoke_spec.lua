@@ -2037,4 +2037,41 @@ describe("KOReader smoke", function()
         assert.are.equal(1, #articles)
         assert.are.equal("def456", articles[1].id)
     end)
+
+    it("keeps ready articles and tallies not-ready/extraction-failed/deleted bookmarks separately", function()
+        package.path = "./readeck.koplugin/?.lua;" .. package.path
+        install_koreader_stubs()
+        local Readeck = dofile("readeck.koplugin/main.lua")
+        local instance = setmetatable({}, { __index = Readeck })
+
+        local articles = instance:filterUnreadyArticles({
+            { id = "ready1", title = "Ready", state = 0, loaded = true, has_article = true },
+            { id = "legacy1", title = "No readiness fields at all" },
+            { id = "loading1", title = "Still loading", state = 2 },
+            { id = "broken1", title = "Extraction failed", state = 1 },
+            { id = "deleted1", title = "Pending deletion", is_deleted = true },
+        })
+
+        assert.are.equal(2, #articles)
+        assert.are.equal("ready1", articles[1].id)
+        assert.are.equal("legacy1", articles[2].id)
+        assert.are.equal(1, instance.sync_articles_not_ready)
+        assert.are.equal(1, instance.sync_articles_extraction_failed)
+    end)
+
+    it("reports still-processing and extraction-failed counts distinctly from download failures", function()
+        package.path = "./readeck.koplugin/?.lua;" .. package.path
+        install_koreader_stubs()
+        local Readeck = dofile("readeck.koplugin/main.lua")
+        local instance = setmetatable({}, { __index = Readeck })
+
+        local message = instance:formatSyncMessage(1, 0, 0, {
+            article_not_ready = 2,
+            article_extraction_failed = 1,
+        })
+
+        assert.is_true(message:find("Still processing on Readeck: 2", 1, true) ~= nil)
+        assert.is_true(message:find("Readeck could not extract: 1", 1, true) ~= nil)
+        assert.is_nil(message:find("Failed: 2", 1, true))
+    end)
 end)

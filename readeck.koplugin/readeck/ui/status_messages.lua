@@ -89,6 +89,12 @@ function StatusMessages.install(Readeck, deps)
         if (counts.local_removed or 0) > 0 then
             table.insert(parts, T(L("Removed from KOReader: %1"), counts.local_removed))
         end
+        if (counts.article_not_ready or 0) > 0 then
+            table.insert(parts, T(L("Still processing on Readeck: %1"), counts.article_not_ready))
+        end
+        if (counts.article_extraction_failed or 0) > 0 then
+            table.insert(parts, T(L("Readeck could not extract: %1"), counts.article_extraction_failed))
+        end
         if (counts.completion_actions_disabled or 0) > 0 then
             table.insert(parts, L("Completion actions skipped during sync."))
         end

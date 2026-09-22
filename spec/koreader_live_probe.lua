@@ -40,6 +40,7 @@ package.path = "./?.lua;./?/init.lua;" .. plugin_dir .. "/?.lua;" .. package.pat
 dofile("setupkoenv.lua")
 dofile("spec/front/unit/commonrequire.lua")
 
+local ArticleReadiness = require("readeck.core.article_readiness")
 local Defaults = require("readeck.core.defaults")
 local Features = require("readeck.core.features")
 local Log = require("readeck.core.log")
@@ -378,6 +379,31 @@ if os.getenv("READECK_LIVE_WRITE") == "1" then
         assert(discovered.id, "discovered bookmark has no id")
         created_id = discovered.id
         print("[write] created bookmark id (BEFORE further steps):", created_id)
+
+        -- Regression check: right after creation, the mock server (started
+        -- with --load-delay) reports this bookmark as still loading
+        -- (state=2/loaded=false/has_article=false). The readiness classifier
+        -- must call that "pending", never "error"/"ready", and the sync-time
+        -- article list filter must drop it for this round instead of handing
+        -- it to the downloader (which would 404 and get counted as failed).
+        print(
+            "[write] freshly created bookmark state/loaded/has_article:",
+            tostring(discovered.state),
+            tostring(discovered.loaded),
+            tostring(discovered.has_article)
+        )
+        local readiness = ArticleReadiness.classify(discovered)
+        assert(
+            readiness == ArticleReadiness.PENDING,
+            "expected freshly created bookmark to classify as pending, got " .. tostring(readiness)
+        )
+        local filtered = instance:filterUnreadyArticles({ discovered })
+        assert(#filtered == 0, "freshly created bookmark should be filtered out of the downloadable list")
+        assert(
+            (instance.sync_articles_not_ready or 0) >= 1,
+            "freshly created bookmark should be tallied as still-processing, not silently dropped"
+        )
+        print("[write] confirmed freshly created bookmark is reported as still-processing, not a download failure")
 
         -- Poll for the article to become downloadable. The plugin's own
         -- download() (readeck/sync/downloads.lua) does not poll or retry on
