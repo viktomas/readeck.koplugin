@@ -74,6 +74,66 @@ Defaults.values = {
     total_timeout = 120,
 }
 
+-- The subset of Defaults.values that is written to koreader/settings/readeck.lua.
+-- Everything not listed here is runtime state (schedulers, dialogs, probe
+-- results) and is deliberately not persisted.
+Defaults.persisted_keys = {
+    -- connection and credentials
+    "server_url",
+    "auth_token",
+    "oauth_client_id",
+    "oauth_refresh_token",
+    "access_token",
+    "token_expiry",
+    "cached_auth_token",
+    "cached_server_url",
+    "cached_auth_method",
+    "server_info",
+    -- general
+    "directory",
+    "language_override",
+    "log_level",
+    -- article selection
+    "filter_tag",
+    "sort_param",
+    "ignore_tags",
+    "auto_tags",
+    "articles_per_sync",
+    -- completion actions
+    "completion_action_finished_enabled",
+    "completion_action_read_enabled",
+    "archive_instead_of_delete",
+    "process_completion_on_sync",
+    "completion_action_sync_policy_version",
+    "remove_finished_from_history",
+    "remove_read_from_history",
+    -- sync behaviour
+    "sync_reading_progress",
+    "remove_local_missing_remote",
+    "periodic_sync_enabled",
+    "periodic_sync_interval_minutes",
+    "download_queue",
+    -- downloads
+    "download_concurrency",
+    "experimental_async_downloads",
+    "experimental_async_downloads_opt_in_version",
+    -- highlights and reviews
+    "auto_export_highlights",
+    "export_highlights_before_sync",
+    "highlight_conflict_policy",
+    "highlight_feature_policy",
+    "highlight_sync_policy",
+    "send_review_as_tags",
+    "sync_star_status",
+    "remote_star_threshold",
+    "sync_star_rating_as_label",
+    -- timeouts
+    "block_timeout",
+    "total_timeout",
+    "file_block_timeout",
+    "file_total_timeout",
+}
+
 local function copy_default(value)
     if type(value) ~= "table" then
         return value
