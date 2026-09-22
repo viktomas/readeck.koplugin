@@ -61,6 +61,11 @@ function Client.install(Readeck, deps)
             if headers == nil then
                 headers = {
                     ["Authorization"] = "Bearer " .. self.access_token,
+                    -- Readeck content-negotiates its errors. Without an Accept
+                    -- header it answers a failed GET with a 5 KB HTML error page
+                    -- instead of {"status":404,"message":"Not Found"}, so the
+                    -- reason never reaches the user. */* keeps EPUB downloads working.
+                    ["Accept"] = "application/json, */*",
                 }
             end
         else

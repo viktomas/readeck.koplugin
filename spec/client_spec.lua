@@ -335,3 +335,37 @@ describe("Readeck:callAPI error messages", function()
         assert.is_nil(err.message)
     end)
 end)
+
+-- Discovered against a real 0.23.4 server: Readeck content-negotiates its
+-- errors, so a GET without an Accept header gets a 5 KB HTML error page and
+-- the JSON reason is never available to show the user.
+describe("Readeck:callAPI content negotiation", function()
+    it("asks for JSON on a plain GET with no request body", function()
+        local instance, http_calls = build_instance({ { code = 200, body = "[]" } })
+
+        instance:callAPI({ method = "GET", path = "/api/bookmarks" })
+
+        assert.are.equal("application/json, */*", http_calls[1].headers["Accept"])
+    end)
+
+    it("still accepts non-JSON so EPUB downloads keep working", function()
+        local instance, http_calls = build_instance({ { code = 200 } })
+
+        instance:callAPI({ method = "GET", path = "/api/bookmarks/x/article.epub", filepath = "/tmp/probe.epub" })
+
+        assert.is.truthy(http_calls[1].headers["Accept"]:find("*/*", 1, true))
+        os.remove("/tmp/probe.epub")
+    end)
+
+    it("does not override an Accept header a caller set explicitly", function()
+        local instance, http_calls = build_instance({ { code = 200, body = "{}" } })
+
+        instance:callAPI({
+            method = "GET",
+            path = "/api/bookmarks",
+            headers = { ["Accept"] = "text/plain", ["Authorization"] = "Bearer x" },
+        })
+
+        assert.are.equal("text/plain", http_calls[1].headers["Accept"])
+    end)
+end)
