@@ -3,7 +3,7 @@
 Working notes for the `viktomas/readeck.koplugin` fork. Everything below sits on top
 of upstream `iceyear/readeck.koplugin` and none of it has been offered upstream yet.
 
-State at the time of writing: 147 busted tests, `mise run check` green, verified
+State at the time of writing: 168 busted tests, `mise run check` green, verified
 against a real Readeck **0.23.4** server.
 
 ## How to run things
@@ -116,6 +116,33 @@ Five commits, in this order, each one making the next possible:
 - **`name` in `_meta.lua`** was ignored by KOReader, which derives the name from the
   directory, and logged a deprecation warning on every startup.
 
+- **Every failed GET fetched an HTML error page instead of a reason.** Readeck
+  content-negotiates its errors, and the plugin sent no `Accept` header on requests
+  without a JSON body — only POST/PATCH got one, as a side effect of `callAPI` setting
+  it when it encodes a table. So a failed GET came back as 5.5 KB of HTML where
+  `Accept: application/json` gets `{"status":404,"message":"Not Found"}`. Found by
+  pointing the new error-reporting check at a real server: the unit tests all used the
+  JSON shape `curl` sees by default, so no test could have caught it. The default
+  headers now ask for `application/json, */*`; the `*/*` keeps EPUB downloads working,
+  which the live probe verifies.
+
+- **A rejected highlight was indistinguishable from a network drop.** `callAPI` read
+  the error body only for a `Log:debug` line and then discarded it, so the user got
+  `Failed: 1` whatever went wrong. `Errors` now carries an optional `message`, parsed
+  from the body by a pure `Errors.message_from_body`, and it surfaces both in the API
+  error dialog (`Server said: %1`, framing the server's untranslated wording) and next
+  to the highlight failure count (`Failed: 1 (element "section/p[1]" not found)`).
+
+  Three things made this less mechanical than it looks. Readeck answers in three
+  different shapes — `{"message":...}` for a 400, a `fields.<name>.errors` form shape
+  for a 422 with *no* top-level message, and plain text for 401/404 — so a parser that
+  only read `.message` would have missed two of them. KOReader's `json.decode` is a
+  callable *table*, so a `type(decode) == "function"` guard silently rejects the real
+  decoder; the first live run showed raw JSON to the user because of it. And
+  `add_highlight_counts` merges per-article counts with `tonumber(value) or 0`, which
+  turns a text reason into `0` the moment two articles are merged — the reason had to
+  be exempted from the summing rule.
+
 ### Testing against reality
 
 Everything used to be tested against `spec/mock_readeck_server.py` — a fake written from
@@ -139,7 +166,10 @@ Confirmed against 0.23.4, by measurement rather than assumption:
   answers **500, not 404**, while still being stored (probe-only concern: the plugin
   only fetches the EPUB, which is ready first);
 - a fresh bookmark really does report `state=2 loaded=false has_article=false`;
-- the version gate extrapolates correctly past the newest version the mock models.
+- the version gate extrapolates correctly past the newest version the mock models;
+- error bodies depend on `Accept`: with `application/json` a 404 is
+  `{"status":404,"message":"Not Found"}` and a 422 is a `fields.<name>.errors` form
+  shape with no top-level message; without it, an HTML page.
 
 Unknown fields in an annotation POST are ignored by the server, so the KOReader-internal
 keys that `export.lua` blindly includes are harmless — worth knowing, but it was my first
@@ -147,21 +177,21 @@ and wrong hypothesis for the 400.
 
 ## What still has to be done
 
-### 1. Surface *why* a highlight was rejected — next, and the best value for the size
+### 1. Run a full interactive sync against a real server — the only untested surface left
 
-Readeck explains its rejections (`element "..." not found`, `overlapping annotation`).
-The user never sees any of it, so a rejected highlight is indistinguishable from a
-network drop:
+The probes drive the API layer directly; nothing has ever exercised the plugin through
+its own UI, which is where 14 mixins and 177 methods actually compose. This needs a
+human at the emulator, so no probe can substitute for it:
 
-- `readeck/net/client.lua:192-206` reads the error body only for a `Log:debug` line,
-  then discards it; `Errors.new` has no `message` field.
-- `readeck/annotations/export.lua:321` discards the error object entirely; `:343` just
-  increments `counts.error`.
-- The user gets a bare `"Failed: 1"`.
+```bash
+READECK_URL=... READECK_TOKEN=... mise run emulator-seed && mise run emulator-run
+```
 
-Add an optional `message` to the error table, populate it from the JSON error body, and
-carry at least one concrete reason into the message. The live probe can produce both
-real 400 shapes on demand, so this is testable end to end.
+Worth covering in one sitting: a list sync of 20+ bookmarks; add a URL and sync
+immediately (the readiness fix under real timing); highlight an article including one
+overlapping and one block-spanning selection; sync highlights back; archive one server-
+side and re-sync; delete one locally and re-sync. The error messages added above are
+what make the resulting failures legible, which is why they were done first.
 
 ### 2. `Trapper` instead of `wrapSinkWithUIRefresh`
 
@@ -193,13 +223,17 @@ already covered by `spec/form_spec.lua`.
 
 ### 5. Smaller things
 
+- The reason carried into the *highlight* summary does not reach the full-sync
+  completion summary, which still folds `counts.error` and `counts.import_failed` into
+  a single `highlights_failed` number (`sync/articles.lua:371`).
+
 - `export.lua:321` POSTs the entire KOReader annotation table, internal bookkeeping
   fields and all. Harmless — the server ignores unknown fields — but it means the
   outgoing payload is whatever KOReader happens to put in a sidecar.
 - The mock still ignores every query filter (`is_archived`, `type`, `labels`, `sort`)
   and returns the whole store, so no test exercises filtering.
-- The plugin has still never run a full interactive sync against a real server; the
-  probes drive the code paths directly rather than through the UI.
+- The mock answers errors in the JSON shape only. The real server picks its shape from
+  `Accept`, which is exactly the class of bug the mock cannot model.
 - Nothing here has been offered upstream.
 
 ## Conventions
