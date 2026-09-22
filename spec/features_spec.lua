@@ -19,6 +19,15 @@ describe("readeck.core.features", function()
         assert.is_false(Features.version_at_least({ version = { canonical = "0.22.1" } }, "0.22.2"))
     end)
 
+    it("gates annotation capabilities on the server version only", function()
+        -- Readeck never advertises annotation feature strings, so an unknown
+        -- version must not be talked into the newer payload shape.
+        assert.is_true(Features.supports_annotation_notes({ version = { canonical = "0.23.4" } }))
+        assert.is_false(Features.supports_annotation_notes({ features = { "annotation_notes" } }))
+        assert.is_true(Features.supports_annotation_none_color({ version = { canonical = "0.22.2" } }))
+        assert.is_false(Features.supports_annotation_none_color({ features = { "annotation_none_color" } }))
+    end)
+
     it("builds a highlight payload profile from server capabilities", function()
         assert.are.same(
             { notes = true, none_color = true },

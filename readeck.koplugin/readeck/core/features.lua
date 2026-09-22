@@ -1,5 +1,12 @@
 local Features = {}
 
+-- Readeck advertises only "oauth" in /api/info (plus "email" when the caller has
+-- the email:send permission) - see internal/server/server.go in the Readeck
+-- source. There is no feature string for annotation notes or for the "none"
+-- highlight colour, so both are gated on the server version that introduced
+-- them instead.
+local ANNOTATION_FEATURES_MIN_VERSION = "0.22.2"
+
 local function parse_version(version)
     version = tostring(version or "")
     local major, minor, patch = version:match("^(%d+)%.(%d+)%.?(%d*)")
@@ -55,11 +62,11 @@ function Features.version_at_least(info, target)
 end
 
 function Features.supports_annotation_notes(info)
-    return Features.has_feature(info, "annotation_notes") == true or Features.version_at_least(info, "0.22.2")
+    return Features.version_at_least(info, ANNOTATION_FEATURES_MIN_VERSION)
 end
 
 function Features.supports_annotation_none_color(info)
-    return Features.has_feature(info, "annotation_none_color") == true or Features.version_at_least(info, "0.22.2")
+    return Features.version_at_least(info, ANNOTATION_FEATURES_MIN_VERSION)
 end
 
 function Features.highlight_payload_profile(info)
