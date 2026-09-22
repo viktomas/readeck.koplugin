@@ -1,5 +1,6 @@
 local Api = require("readeck.net.api")
 local DocSettings = require("docsettings")
+local Errors = require("readeck.net.errors")
 local FFIUtil = require("ffi/util")
 local FileManager = require("apps/filemanager/filemanager")
 local InfoMessage = require("ui/widget/infomessage")
@@ -248,7 +249,7 @@ function LocalActions.install(Readeck, deps)
             }) == false
         then
             if self:isOAuthPollingActive() then
-                return nil, "auth_pending"
+                return nil, Errors.new(Errors.KIND.AUTH_PENDING)
             end
             return false
         end

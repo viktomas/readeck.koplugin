@@ -1,4 +1,5 @@
 local Api = require("readeck.net.api")
+local Errors = require("readeck.net.errors")
 local InfoMessage = require("ui/widget/infomessage")
 local JSON = require("json")
 local ProgressMessage = require("readeck.ui.progress_message")
@@ -52,16 +53,16 @@ function Articles.install(Readeck, deps)
             })
 
             Log:debug("Fetching article list with URL:", articles_url)
-            local articles_json, err, code = self:callAPI({ method = "GET", path = articles_url })
+            local articles_json, err = self:callAPI({ method = "GET", path = articles_url })
 
-            if err == "http_error" and code == 404 then
+            if err and err.kind == Errors.KIND.HTTP_ERROR and err.code == 404 then
                 Log:debug("Couldn't get offset", offset)
                 break
-            elseif err == "auth_pending" then
+            elseif err and err.kind == Errors.KIND.AUTH_PENDING then
                 Log:info("OAuth authorization started while requesting article list")
                 return nil, err
             elseif err or articles_json == nil then
-                Log:warn("Download at offset", offset, "failed with", err, code)
+                Log:warn("Download at offset", offset, "failed with", err and err.kind, err and err.code)
                 if not options.quiet then
                     UIManager:show(InfoMessage:new({
                         text = L("Requesting article list failed."),
@@ -186,9 +187,9 @@ function Articles.install(Readeck, deps)
                         then
                             fetch_next()
                         elseif self:isOAuthPollingActive() then
-                            done(nil, "auth_pending")
+                            done(nil, Errors.new(Errors.KIND.AUTH_PENDING, code))
                         else
-                            done(nil, "auth_error")
+                            done(nil, Errors.new(Errors.KIND.AUTH_ERROR, code))
                         end
                         return
                     end
@@ -200,14 +201,14 @@ function Articles.install(Readeck, deps)
                             response_error(response),
                             code or ""
                         )
-                        done(nil, "network_error")
+                        done(nil, Errors.new(Errors.KIND.NETWORK_ERROR, code))
                         return
                     end
 
                     local ok, articles_json = pcall(JSON.decode, response.body or "")
                     if not ok or type(articles_json) ~= "table" then
                         Log:warn("Async article list response was not valid JSON")
-                        done(nil, "json_error")
+                        done(nil, Errors.new(Errors.KIND.JSON_ERROR, code))
                         return
                     end
 
@@ -402,7 +403,7 @@ function Articles.install(Readeck, deps)
         local info = self:showSyncStatus(L("Getting article list…"))
         self:getArticleListAsync(function(articles, list_err)
             self:closeSyncStatus(info)
-            if list_err == "auth_pending" then
+            if list_err and list_err.kind == Errors.KIND.AUTH_PENDING then
                 self.sync_in_progress = false
                 return
             end

@@ -1,5 +1,6 @@
 local Api = require("readeck.net.api")
 local DocSettings = require("docsettings")
+local Errors = require("readeck.net.errors")
 local Event = require("ui/event")
 local FFIUtil = require("ffi/util")
 local Features = require("readeck.core.features")
@@ -253,7 +254,7 @@ function Export.install(Readeck, deps)
         local existing_highlights_raw, err = self:callAPI({ method = "GET", path = Api.paths.annotations(article_id) })
         local existing_highlights = {}
         if err then
-            if err == "auth_pending" then
+            if err.kind == Errors.KIND.AUTH_PENDING then
                 return false, add_highlight_counts(new_highlight_counts(), { error = 1 })
             end
             if not options.quiet then

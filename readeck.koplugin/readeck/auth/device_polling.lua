@@ -30,7 +30,7 @@ function DevicePolling.install(Readeck, deps)
         table.insert(state.on_success_callbacks, callback)
     end
 
-    function Readeck:evaluateOAuthDeviceTokenPoll(ctx, token_result, poll_err, poll_code, wait_interval)
+    function Readeck:evaluateOAuthDeviceTokenPoll(ctx, token_result, poll_err, wait_interval)
         if token_result and token_result.access_token then
             self:storeAccessToken("oauth", token_result.access_token, token_result.expires_in, {
                 oauth_refresh_token = token_result.refresh_token or "",
@@ -52,12 +52,17 @@ function DevicePolling.install(Readeck, deps)
         if oauth_error == "expired_token" then
             return "fail", L("OAuth authorization request expired.")
         end
-        if poll_code and poll_code >= 500 then
-            Log:warn("OAuth token polling server error", poll_code)
+        if poll_err and poll_err.code and poll_err.code >= 500 then
+            Log:warn("OAuth token polling server error", poll_err.code)
             return "retry", wait_interval + 5
         end
 
-        Log:error("OAuth token polling failed", poll_err or "", oauth_error or "", poll_code or "")
+        Log:error(
+            "OAuth token polling failed",
+            poll_err and poll_err.kind or "",
+            oauth_error or "",
+            poll_err and poll_err.code or ""
+        )
         return "fail", L("OAuth token request failed.")
     end
 
@@ -148,13 +153,12 @@ function DevicePolling.install(Readeck, deps)
                     return
                 end
 
-                local token_result, poll_err, poll_code = self:callOAuthFormAPI("/api/oauth/token", {
+                local token_result, poll_err = self:callOAuthFormAPI("/api/oauth/token", {
                     grant_type = OAUTH_DEVICE_GRANT,
                     client_id = ctx.client_id,
                     device_code = ctx.device_code,
                 })
-                local outcome, value =
-                    self:evaluateOAuthDeviceTokenPoll(ctx, token_result, poll_err, poll_code, state.interval)
+                local outcome, value = self:evaluateOAuthDeviceTokenPoll(ctx, token_result, poll_err, state.interval)
                 if outcome == "success" then
                     self:finishOAuthPolling(state, true, L("OAuth authorization successful."))
                     return

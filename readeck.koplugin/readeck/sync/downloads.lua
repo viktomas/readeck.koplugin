@@ -1,5 +1,6 @@
 local Api = require("readeck.net.api")
 local Dates = require("readeck.core.dates")
+local Errors = require("readeck.net.errors")
 local DocSettings = require("docsettings")
 local Event = require("ui/event")
 local FFIUtil = require("ffi/util")
@@ -433,16 +434,16 @@ function Downloads.install(Readeck, deps)
     function Readeck:download(article)
         local local_path, item_url = self:getDownloadTarget(article)
         if not self:shouldSkipDownload(local_path, article) then
-            local ok, err, code = self:callAPI({ method = "GET", path = item_url, filepath = local_path })
+            local ok, err = self:callAPI({ method = "GET", path = item_url, filepath = local_path })
             if ok then
                 self:applyDownloadedArticleMetadata(local_path, article)
                 self:syncReadingProgressFromRemote(local_path, article)
                 return downloaded
             end
-            if err == "auth_error" then
+            if err and err.kind == Errors.KIND.AUTH_ERROR then
                 self:showAPIError(err)
             end
-            Log:warn("Article download failed:", article.id, err or "unknown", code or "")
+            Log:warn("Article download failed:", article.id, err and err.kind or "unknown", err and err.code or "")
             return failed
         end
         self:applyDownloadedArticleMetadata(local_path, article)

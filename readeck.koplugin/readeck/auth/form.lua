@@ -1,3 +1,4 @@
+local Errors = require("readeck.net.errors")
 local JSON = require("json")
 local http = require("socket.http")
 local ltn12 = require("ltn12")
@@ -37,7 +38,7 @@ function Form.install(Readeck, deps)
     function Readeck:callOAuthFormAPI(apiurl, form_data)
         if self:isempty(self.server_url) then
             Log:warn("OAuth request attempted without configured server URL")
-            return nil, "config_error"
+            return nil, Errors.new(Errors.KIND.CONFIG_ERROR)
         end
 
         local sink = {}
@@ -55,10 +56,10 @@ function Form.install(Readeck, deps)
         }
 
         socketutil:set_timeout(self.block_timeout, self.total_timeout)
-        local code, resp_headers = socket.skip(1, http.request(request))
+        local code, resp_headers, status = socket.skip(1, http.request(request))
         socketutil:reset_timeout()
         if not resp_headers then
-            return nil, "network_error"
+            return nil, Errors.new(Errors.KIND.NETWORK_ERROR)
         end
         local code_num = tonumber(code)
 
@@ -71,9 +72,12 @@ function Form.install(Readeck, deps)
             end
         end
         if code_num and code_num >= 200 and code_num < 300 then
-            return result or {}, nil, code_num
+            return result or {}, nil
         end
-        return result, "http_error", code_num or code
+        -- `code` can be a non-numeric string (e.g. a luasocket connection error) when
+        -- `code_num` fails to parse; keep it as the status text in that case so it is
+        -- not lost, while `code` on the error table stays a number.
+        return result, Errors.new(Errors.KIND.HTTP_ERROR, code_num, code_num and status or code)
     end
 
     function Readeck:makeOAuthSoftwareID()

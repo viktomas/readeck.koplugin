@@ -1,4 +1,5 @@
 local Api = require("readeck.net.api")
+local Errors = require("readeck.net.errors")
 local JSON = require("json")
 local UIManager = require("ui/uimanager")
 local http = require("socket.http")
@@ -77,7 +78,7 @@ function Client.install(Readeck, deps)
             local file, open_err = io.open(filepath, "wb")
             if not file then
                 Log:error("Could not open response file:", filepath, open_err or "")
-                return nil, "file_error"
+                return nil, Errors.new(Errors.KIND.FILE_ERROR)
             end
             socketutil:set_timeout(self.file_block_timeout, self.file_total_timeout)
             request.sink = self:wrapSinkWithUIRefresh(socketutil.file_sink(file))
@@ -109,7 +110,7 @@ function Client.install(Readeck, deps)
             end
         else
             Log:error("No response headers received")
-            return nil, "network_error"
+            return nil, Errors.new(Errors.KIND.NETWORK_ERROR)
         end
 
         local is_auth_endpoint = apiurl == Api.paths.info or apiurl:sub(1, 11) == "/api/oauth/"
@@ -140,10 +141,10 @@ function Client.install(Readeck, deps)
                 })
             elseif self:isOAuthPollingActive() then
                 Log:info("OAuth authorization flow started after auth failure")
-                return nil, "auth_pending", code
+                return nil, Errors.new(Errors.KIND.AUTH_PENDING, code, status)
             else
                 Log:error("Failed to refresh token")
-                return nil, "auth_error", code
+                return nil, Errors.new(Errors.KIND.AUTH_ERROR, code, status)
             end
         end
 
@@ -176,7 +177,7 @@ function Client.install(Readeck, deps)
                 else
                     Log:error("Response is not valid JSON")
                 end
-                return nil, "json_error"
+                return nil, Errors.new(Errors.KIND.JSON_ERROR, code, status)
             end
         else
             local error_content = filepath == nil and table.concat(sink) or ""
@@ -193,7 +194,7 @@ function Client.install(Readeck, deps)
                 Log:error("Communication with server failed:", code)
             end
             Log:error("Request failed:", status or code, "URL:", request.url)
-            return nil, "http_error", code
+            return nil, Errors.new(Errors.KIND.HTTP_ERROR, code, status)
         end
     end
 end

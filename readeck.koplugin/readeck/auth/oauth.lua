@@ -41,7 +41,7 @@ function OAuth.install(Readeck, deps)
                 text = L("Could not fetch Readeck server information."),
             }))
         end
-        Log:warn("Could not fetch server info", err or "")
+        Log:warn("Could not fetch server info", err and err.kind or "")
         return self.server_info
     end
 
@@ -142,7 +142,7 @@ function OAuth.install(Readeck, deps)
         end
 
         Log:info("Attempting OAuth refresh token flow")
-        local result = self:callOAuthFormAPI("/api/oauth/token", {
+        local result, err = self:callOAuthFormAPI("/api/oauth/token", {
             grant_type = "refresh_token",
             client_id = self.oauth_client_id,
             refresh_token = self.oauth_refresh_token,
@@ -156,6 +156,7 @@ function OAuth.install(Readeck, deps)
             return true
         end
 
+        Log:warn("OAuth token refresh failed", err and err.kind or "", err and err.code or "")
         return false
     end
 
@@ -190,7 +191,7 @@ function OAuth.install(Readeck, deps)
         local client_name = "Readeck for KOReader"
         local software_id = self:makeOAuthSoftwareID()
 
-        local client_info, client_err, client_code = self:callOAuthFormAPI("/api/oauth/client", {
+        local client_info, client_err = self:callOAuthFormAPI("/api/oauth/client", {
             client_name = client_name,
             client_uri = "https://github.com/iceyear/readeck.koplugin",
             software_id = software_id,
@@ -199,7 +200,11 @@ function OAuth.install(Readeck, deps)
         })
 
         if not client_info or not client_info.client_id then
-            Log:error("OAuth client registration failed", client_err or "", client_code or "")
+            Log:error(
+                "OAuth client registration failed",
+                client_err and client_err.kind or "",
+                client_err and client_err.code or ""
+            )
             UIManager:show(InfoMessage:new({
                 text = L("OAuth setup failed: could not register client."),
             }))
@@ -207,12 +212,16 @@ function OAuth.install(Readeck, deps)
         end
 
         local client_id = client_info.client_id
-        local device_info, device_err, device_code = self:callOAuthFormAPI("/api/oauth/device", {
+        local device_info, device_err = self:callOAuthFormAPI("/api/oauth/device", {
             client_id = client_id,
             scope = DEFAULT_OAUTH_SCOPES,
         })
         if not device_info or not device_info.device_code then
-            Log:error("OAuth device code request failed", device_err or "", device_code or "")
+            Log:error(
+                "OAuth device code request failed",
+                device_err and device_err.kind or "",
+                device_err and device_err.code or ""
+            )
             UIManager:show(InfoMessage:new({
                 text = L("OAuth setup failed: could not request device code."),
             }))

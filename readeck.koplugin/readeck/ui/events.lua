@@ -1,4 +1,5 @@
 local BD = require("ui/bidi")
+local Errors = require("readeck.net.errors")
 local Event = require("ui/event")
 local InfoMessage = require("ui/widget/infomessage")
 local NetworkMgr = require("ui/network/manager")
@@ -40,7 +41,7 @@ function Events.install(Readeck, deps)
             UIManager:show(InfoMessage:new({
                 text = T(L("Article added to Readeck:\n%1"), BD.url(article_url)),
             }))
-        elseif add_err == "auth_pending" then
+        elseif add_err and add_err.kind == Errors.KIND.AUTH_PENDING then
             UIManager:show(InfoMessage:new({
                 text = L("OAuth authorization started. Finish login and the article will be retried."),
             }))
