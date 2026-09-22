@@ -1,0 +1,98 @@
+# Local development environment (not upstream). Everything it creates lives
+# under references/, which is already gitignored.
+[tools]
+lua = "5.1"
+stylua = "latest"
+
+[env]
+# busted/luacheck are installed into a project-local LuaRocks tree by the
+# `setup` task below.
+_.path = ["{{config_root}}/references/luarocks/bin"]
+LUA_PATH = "{{config_root}}/references/luarocks/share/lua/5.1/?.lua;{{config_root}}/references/luarocks/share/lua/5.1/?/init.lua;;"
+LUA_CPATH = "{{config_root}}/references/luarocks/lib/lua/5.1/?.so;;"
+# Where the KOReader checkout used by the emulator smoke tests lives.
+KOREADER_DIR = "{{config_root}}/references/koreader"
+
+[tasks.setup]
+description = "Install busted + luacheck into references/luarocks and link the KOReader checkout"
+run = """
+set -e
+luarocks install --tree references/luarocks busted
+luarocks install --tree references/luarocks luacheck
+if [ ! -e references/koreader ]; then
+    ln -s "$HOME/workspace/third-party/koreader" references/koreader
+fi
+echo "busted:   $(busted --version)"
+echo "luacheck: $(luacheck --version | head -1)"
+echo "stylua:   $(stylua --version)"
+"""
+
+[tasks.test]
+description = "Run the busted spec suite"
+run = "busted spec"
+
+[tasks.lint]
+description = "luacheck the plugin and specs"
+run = "luacheck readeck.koplugin/main.lua readeck.koplugin/_meta.lua readeck.koplugin/readeck spec"
+
+[tasks.format]
+run = "stylua readeck.koplugin/main.lua readeck.koplugin/_meta.lua readeck.koplugin/readeck spec"
+
+[tasks.format-check]
+run = "stylua --check readeck.koplugin/main.lua readeck.koplugin/_meta.lua readeck.koplugin/readeck spec"
+
+[tasks.check]
+description = "lint + format-check + test"
+depends = ["lint", "format-check", "test"]
+
+[tasks.emulator-build]
+description = "Build the KOReader emulator (long; needs the Homebrew deps from koreader/doc/Building.md)"
+dir = "{{config_root}}"
+run = """
+set -e
+cd references/koreader
+export PATH="$(brew --prefix)/opt/findutils/libexec/gnubin:$(brew --prefix)/opt/gnu-getopt/bin:$(brew --prefix)/opt/make/libexec/gnubin:$(brew --prefix)/opt/util-linux/bin:$PATH"
+./kodev build
+"""
+
+[tasks.emulator-smoke]
+description = "Run the plugin against a real KOReader runtime (needs emulator-build)"
+run = """
+set -e
+BUILD_DIR="$(echo references/koreader/koreader-emulator-*/koreader | head -1)"
+if [ ! -x "$BUILD_DIR/luajit" ]; then
+    echo "No emulator build at $BUILD_DIR - run 'mise run emulator-build' first." >&2
+    exit 1
+fi
+cd "$BUILD_DIR" && READECK_PLUGIN_DIR="{{config_root}}/readeck.koplugin" ./luajit "{{config_root}}/spec/koreader_runtime_probe.lua"
+"""
+
+[tasks.emulator-network-smoke]
+description = "Drive the HTTP client against spec/mock_readeck_server.py inside the KOReader runtime"
+run = """
+set -e
+BUILD_DIR="$(cd "$(echo references/koreader/koreader-emulator-*/koreader | head -1)" && pwd)"
+run_probe() {
+    python3 spec/mock_readeck_server.py --port "$2" --version "$1" &
+    server_pid=$!
+    sleep 0.5
+    (cd "$BUILD_DIR" && READECK_PLUGIN_DIR="{{config_root}}/readeck.koplugin" \
+        READECK_MOCK_URL="http://127.0.0.1:$2" READECK_EXPECT_VERSION="$1" \
+        READECK_EXPECT_LEGACY="$3" ./luajit "{{config_root}}/spec/koreader_network_probe.lua")
+    status=$?
+    kill $server_pid 2>/dev/null || true
+    wait $server_pid 2>/dev/null || true
+    return $status
+}
+run_probe 0.22.2 18080 0
+run_probe 0.22.1 18081 1
+"""
+
+[tasks.emulator-run]
+description = "Start the emulator with this plugin symlinked into its plugins dir"
+run = """
+set -e
+BUILD_DIR="$(echo references/koreader/koreader-emulator-*/koreader | head -1)"
+ln -sfn "{{config_root}}/readeck.koplugin" "$BUILD_DIR/plugins/readeck.koplugin"
+cd references/koreader && ./kodev run
+"""
