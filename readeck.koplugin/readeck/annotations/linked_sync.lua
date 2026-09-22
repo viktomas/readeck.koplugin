@@ -1,4 +1,3 @@
-local Api = require("readeck.net.api")
 local Highlights = require("readeck.annotations.highlights")
 
 local LinkedSync = {}
@@ -37,11 +36,7 @@ function LinkedSync.extract_updated_remote(result, annotation_id)
 end
 
 function LinkedSync.patch_remote(plugin, article_id, annotation_id, update_payload)
-    return plugin:callAPI({
-        method = "PATCH",
-        path = Api.paths.annotation(article_id, annotation_id),
-        body = update_payload,
-    })
+    return plugin:getApi():update_annotation(article_id, annotation_id, update_payload)
 end
 
 function LinkedSync.apply_plan(local_highlight, plan, profile)

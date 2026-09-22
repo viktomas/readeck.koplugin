@@ -28,6 +28,15 @@ function Client.install(Readeck, deps)
         end
     end
 
+    function Readeck:getApi()
+        if not self._api then
+            self._api = Api.new(function(request)
+                return self:callAPI(request)
+            end)
+        end
+        return self._api
+    end
+
     function Readeck:callAPI(opts)
         local method = opts.method
         local apiurl = opts.path
@@ -113,7 +122,7 @@ function Client.install(Readeck, deps)
             return nil, Errors.new(Errors.KIND.NETWORK_ERROR)
         end
 
-        local is_auth_endpoint = apiurl == Api.paths.info or apiurl:sub(1, 11) == "/api/oauth/"
+        local is_auth_endpoint = Api.is_auth_exempt_path(apiurl)
         if (code == 401 or code == 403) and not retry_auth and apiurl:sub(1, 1) == "/" and not is_auth_endpoint then
             Log:info("Authentication failed (", code, "), attempting to refresh token")
 

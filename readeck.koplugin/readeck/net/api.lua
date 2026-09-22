@@ -47,17 +47,18 @@ function Api.new(transport)
     return setmetatable({ transport = transport }, { __index = Api })
 end
 
-function Api:request(method, path, body, headers)
+function Api:request(method, path, body, headers, filepath)
     return self.transport({
         method = method,
         path = path,
         body = body,
-        headers = headers or {},
+        headers = headers,
+        filepath = filepath,
     })
 end
 
 function Api:get_info()
-    return self:request("GET", Api.paths.info)
+    return self:request("GET", Api.paths.info, nil, {})
 end
 
 function Api:list_bookmarks(params)
@@ -68,9 +69,7 @@ function Api:create_bookmark(body)
     return self:request("POST", Api.paths.bookmarks, body)
 end
 
-function Api:archive_bookmark(id, body)
-    body = body or {}
-    body.is_archived = true
+function Api:update_bookmark(id, body)
     return self:request("PATCH", Api.paths.bookmark(id), body)
 end
 
@@ -78,8 +77,15 @@ function Api:delete_bookmark(id)
     return self:request("DELETE", Api.paths.bookmark(id))
 end
 
-function Api:download_article(id)
-    return self:request("GET", Api.paths.bookmark_article(id))
+-- Paths that never require (and must not trigger) an Authorization retry:
+-- the info endpoint is used unauthenticated, and OAuth endpoints handle
+-- their own auth flow.
+function Api.is_auth_exempt_path(path)
+    return path == Api.paths.info or path:sub(1, 11) == "/api/oauth/"
+end
+
+function Api:download_article(id, filepath)
+    return self:request("GET", Api.paths.bookmark_article(id), nil, nil, filepath)
 end
 
 function Api:list_annotations(id)

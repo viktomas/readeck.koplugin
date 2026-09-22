@@ -1,4 +1,3 @@
-local Api = require("readeck.net.api")
 local DocSettings = require("docsettings")
 local Errors = require("readeck.net.errors")
 local Event = require("ui/event")
@@ -251,7 +250,7 @@ function Export.install(Readeck, deps)
             return false, add_highlight_counts(new_highlight_counts(), { error = 1 })
         end
 
-        local existing_highlights_raw, err = self:callAPI({ method = "GET", path = Api.paths.annotations(article_id) })
+        local existing_highlights_raw, err = self:getApi():list_annotations(article_id)
         local existing_highlights = {}
         if err then
             if err.kind == Errors.KIND.AUTH_PENDING then
@@ -319,11 +318,7 @@ function Export.install(Readeck, deps)
                             local_highlight.end_selector
                         )
 
-                        local result = self:callAPI({
-                            method = "POST",
-                            path = Api.paths.annotations(article_id),
-                            body = local_highlight,
-                        })
+                        local result = self:getApi():create_annotation(article_id, local_highlight)
                         if result then
                             counts.success = counts.success + 1
                             if type(result) == "table" and result.id then

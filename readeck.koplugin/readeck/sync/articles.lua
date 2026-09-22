@@ -43,7 +43,8 @@ function Articles.install(Readeck, deps)
         local limit = math.min(self.articles_per_sync, 30)
 
         while #article_list < self.articles_per_sync do
-            local articles_url = Api.bookmarks_query({
+            Log:debug("Fetching article list with offset:", offset)
+            local articles_json, err = self:getApi():list_bookmarks({
                 limit = limit,
                 offset = offset,
                 is_archived = 0,
@@ -51,9 +52,6 @@ function Articles.install(Readeck, deps)
                 labels = self.filter_tag,
                 sort = self.sort_param,
             })
-
-            Log:debug("Fetching article list with URL:", articles_url)
-            local articles_json, err = self:callAPI({ method = "GET", path = articles_url })
 
             if err and err.kind == Errors.KIND.HTTP_ERROR and err.code == 404 then
                 Log:debug("Couldn't get offset", offset)

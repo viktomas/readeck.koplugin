@@ -1,4 +1,3 @@
-local Api = require("readeck.net.api")
 local ConfirmBox = require("ui/widget/confirmbox")
 local Device = require("device")
 local Features = require("readeck.core.features")
@@ -30,7 +29,7 @@ function OAuth.install(Readeck, deps)
         if type(self.server_info) == "table" and not force then
             return self.server_info
         end
-        local info, err = self:callAPI({ method = "GET", path = Api.paths.info, headers = {} })
+        local info, err = self:getApi():get_info()
         if type(info) == "table" then
             self.server_info = info
             self:saveSettings()

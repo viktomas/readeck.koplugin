@@ -1,4 +1,3 @@
-local Api = require("readeck.net.api")
 local DocSettings = require("docsettings")
 local Errors = require("readeck.net.errors")
 local FFIUtil = require("ffi/util")
@@ -222,7 +221,7 @@ function LocalActions.install(Readeck, deps)
         local body = {
             read_progress = math.max(0, math.min(100, Math.round(progress))),
         }
-        local remote_ok, err = self:callAPI({ method = "PATCH", path = Api.paths.bookmark(id), body = body })
+        local remote_ok, err = self:getApi():update_bookmark(id, body)
         if remote_ok then
             counts.remote_progress_updated = counts.remote_progress_updated + 1
         else
@@ -266,7 +265,7 @@ function LocalActions.install(Readeck, deps)
             body.labels = tags
         end
 
-        local result, err = self:callAPI({ method = "POST", path = Api.paths.bookmarks, body = body })
+        local result, err = self:getApi():create_bookmark(body)
         if not result then
             self:showAPIError(err)
         end
@@ -292,7 +291,7 @@ function LocalActions.install(Readeck, deps)
                     add_labels = tags,
                 }
 
-                local _, err = self:callAPI({ method = "PATCH", path = Api.paths.bookmark(id), body = body })
+                local _, err = self:getApi():update_bookmark(id, body)
                 if err then
                     self:showAPIError(err)
                 end
@@ -336,7 +335,7 @@ function LocalActions.install(Readeck, deps)
                     end
                 end
                 local err
-                remote_ok, err = self:callAPI({ method = "PATCH", path = Api.paths.bookmark(id), body = body })
+                remote_ok, err = self:getApi():update_bookmark(id, body)
                 if remote_ok then
                     counts.remote_archived = counts.remote_archived + 1
                 else
@@ -344,7 +343,7 @@ function LocalActions.install(Readeck, deps)
                 end
             else
                 local err
-                remote_ok, err = self:callAPI({ method = "DELETE", path = Api.paths.bookmark(id) })
+                remote_ok, err = self:getApi():delete_bookmark(id)
                 if remote_ok then
                     counts.remote_deleted = counts.remote_deleted + 1
                 else
