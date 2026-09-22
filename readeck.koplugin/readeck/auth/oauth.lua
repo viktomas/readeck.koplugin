@@ -108,6 +108,7 @@ function OAuth.install(Readeck, deps)
         else
             self.token_expiry = now + 365 * 24 * 60 * 60
         end
+        self.token_stored_at = now
         self.access_token = token
         self.cached_auth_method = method
         self.cached_server_url = self.server_url
@@ -490,7 +491,38 @@ function OAuth.install(Readeck, deps)
         local now = os.time()
         local auth_method = self:getCurrentAuthMethod()
         local auth_changed = self:isAuthContextChanged(auth_method)
-        if not self:isempty(self.access_token) and self.token_expiry > now + 300 and not auth_changed then
+
+        -- token_stored_at/token_expiry are wall-clock timestamps persisted to
+        -- disk, but this plugin runs on e-readers whose clock is reset by a
+        -- flat battery. A monotonic clock can't help here (the value has to
+        -- survive a reboot), so instead we detect when the stored clock
+        -- reading is no longer consistent with `now` and treat the cached
+        -- token as expired rather than trusting a comparison the device
+        -- can't support. Absent/legacy `token_stored_at` (nil or 0, e.g. a
+        -- settings file written before this check existed) degrades to the
+        -- previous behaviour of trusting token_expiry outright.
+        -- The token cannot have been stored in the future, so `now` being
+        -- behind it is proof the clock moved and token_expiry is meaningless.
+        -- A forward jump needs no special case: it only makes the token look
+        -- expired, which already forces re-authentication.
+        local clock_anomaly = (self.token_stored_at or 0) > 0 and now < self.token_stored_at
+        if clock_anomaly then
+            Log:debug(
+                "Clock moved backwards - treating cached token as expired. now:",
+                now,
+                "stored at:",
+                self.token_stored_at,
+                "expiry:",
+                self.token_expiry
+            )
+        end
+
+        if
+            not clock_anomaly
+            and not self:isempty(self.access_token)
+            and self.token_expiry > now + 300
+            and not auth_changed
+        then
             Log:debug("Using cached token, still valid for", self.token_expiry - now, "seconds")
             return true
         end
@@ -499,14 +531,8 @@ function OAuth.install(Readeck, deps)
             return self:authenticateWithApiToken()
         end
 
-        if auth_method == "oauth" then
-            if self:refreshOAuthToken() then
-                return true
-            end
-            if authorize_with_oauth() then
-                return false
-            end
-            return false
+        if auth_method == "oauth" and self:refreshOAuthToken() then
+            return true
         end
 
         authorize_with_oauth()

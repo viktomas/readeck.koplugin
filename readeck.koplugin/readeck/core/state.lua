@@ -173,6 +173,7 @@ function State.install(Readeck, deps)
         self.directory = settings.directory
         self.access_token = settings.access_token or ""
         self.token_expiry = settings.token_expiry or 0
+        self.token_stored_at = settings.token_stored_at or 0
         self.cached_auth_token = settings.cached_auth_token or ""
         self.cached_server_url = settings.cached_server_url or ""
         self.cached_auth_method = settings.cached_auth_method or ""

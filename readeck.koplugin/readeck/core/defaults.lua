@@ -71,6 +71,7 @@ Defaults.values = {
     sync_star_rating_as_label = false,
     sync_star_status = false,
     token_expiry = 0,
+    token_stored_at = 0,
     total_timeout = 120,
 }
 
@@ -85,6 +86,7 @@ Defaults.persisted_keys = {
     "oauth_refresh_token",
     "access_token",
     "token_expiry",
+    "token_stored_at",
     "cached_auth_token",
     "cached_server_url",
     "cached_auth_method",
