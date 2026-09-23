@@ -1,0 +1,556 @@
+#!/usr/bin/env python3
+"""kodrive - drive the real KOReader emulator from the command line (for AI agents).
+
+Lifecycle
+    kodrive start [--fresh] [--device small|legacy-paperwhite|kindle-paperwhite | --size 540x720 --dpi 212]
+                  [--seed N] [--no-readeck] [--open FILE]
+    kodrive stop [--all]            # quit the emulator (--all: also the local Readeck)
+    kodrive status
+
+Looking
+    kodrive shot [FILE.png]         # screenshot (default: references/manual-artifacts/shot-*.png)
+    kodrive tree [--json] [all=1] [full=1]
+    kodrive find TEXT               # visible elements whose text contains TEXT
+    kodrive info                    # screen size, current UI, open document, page
+    kodrive log [N] [grep=STR]      # tail the emulator log
+
+Acting (every action waits until the UI has settled, then answers JSON)
+    kodrive tap X Y
+    kodrive tap-text TEXT [INDEX]   # exact=1 win=N also accepted
+    kodrive tap-icon NAME [INDEX]   # e.g. appbar.tools, chevron.right (icon names from `tree`)
+    kodrive tap-id ID               # element id from the last `tree`
+    kodrive hold X Y | hold-text TEXT
+    kodrive hold-pan X0 Y0 X1 Y1
+    kodrive swipe X0 Y0 X1 Y1 | swipe left|right|up|down
+    kodrive key NAME                # Back, Menu, Home, Up, Down, Left, Right, Press, LPgFwd, LPgBack
+    kodrive type TEXT [clear=1]
+    kodrive open PATH | home | wait
+    kodrive doc-find TEXT [goto=1]  # where TEXT is on the current reader page
+    kodrive select-text TEXT        # hold+pan over TEXT in the reader (opens the highlight popup)
+    kodrive eval 'LUA'              # dev escape hatch; `-` reads stdin
+    kodrive raw COMMAND [k=v ...]   # any driver command
+
+Local Readeck helpers
+    kodrive readeck-env             # export lines for the local server
+    kodrive api GET /api/bookmarks  # curl the LOCAL server with its token (optional JSON body arg)
+
+Any command accepts extra k=v params, e.g. `shot=/tmp/after.png timeout=30 settle=0`.
+
+Safety: kodrive only ever points the emulator at its own disposable local Readeck
+(e2e/readeck_local.py on port 18960). It ignores READECK_URL/READECK_TOKEN from the
+environment on purpose.
+"""
+
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+STATE = os.path.join(ROOT, "references", "kodrive")
+PROFILE = os.path.join(STATE, "profile")
+LOG = os.path.join(STATE, "koreader.log")
+PIDFILE = os.path.join(STATE, "emulator.pid")
+ARTIFACTS = os.path.join(ROOT, "references", "manual-artifacts")
+DRIVER_PLUGIN = os.path.join(ROOT, "tools", "agentdriver.koplugin")
+READECK_PLUGIN = os.path.join(ROOT, "readeck.koplugin")
+READECK_DIR = os.path.join(ROOT, "references", "readeck-local-manual")
+READECK_PORT = int(os.environ.get("KODRIVE_READECK_PORT", "18960"))
+PORT = int(os.environ.get("KODRIVE_PORT", "18950"))
+BASE = "http://127.0.0.1:%d" % PORT
+
+DEVICES = {
+    # Sizes are SDL window points. On a Retina Mac the framebuffer (and so
+    # screenshots and tap coordinates) is 2x: "small" gives 1080x1440 pixels.
+    "small": (540, 720, 212),
+    "legacy-paperwhite": (758, 1024, 212),
+    "kindle-paperwhite": (1072, 1448, 300),
+    "kobo-clara": (1072, 1448, 300),
+    "kobo-libra": (1264, 1680, 300),
+}
+
+
+def die(msg, code=1):
+    print("kodrive: " + msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def build_dir():
+    base = os.path.join(ROOT, "references", "koreader")
+    if not os.path.isdir(base):
+        die("references/koreader missing - run `mise run setup`")
+    for name in sorted(os.listdir(base)):
+        if name.startswith("koreader-emulator-"):
+            d = os.path.join(base, name, "koreader")
+            if os.access(os.path.join(d, "luajit"), os.X_OK):
+                return d
+    die("no emulator build - run `mise run emulator-build`")
+
+
+# ------------------------------------------------------------------ HTTP
+
+
+def call(command, params=None, timeout=120, quiet_errors=False):
+    data = urllib.parse.urlencode({k: str(v) for k, v in (params or {}).items()}).encode()
+    req = urllib.request.Request(
+        BASE + "/" + command,
+        data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            body = r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace")
+    except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as e:
+        if quiet_errors:
+            return None
+        die("driver not reachable on %s (%s) - is the emulator running? `kodrive start`" % (BASE, e))
+    try:
+        return json.loads(body)
+    except ValueError:
+        return {"ok": True, "text": body}
+
+
+def alive():
+    r = call("ping", timeout=2, quiet_errors=True)
+    return bool(r and r.get("ok"))
+
+
+def emulator_pid():
+    try:
+        with open(PIDFILE) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+        return pid
+    except (OSError, ValueError):
+        return None
+
+
+# ------------------------------------------------------------------ Readeck
+
+
+def readeck_env():
+    path = os.path.join(READECK_DIR, "env")
+    env = {}
+    if os.path.exists(path):
+        with open(path) as f:
+            for line in f:
+                if line.startswith("export "):
+                    k, _, v = line[len("export "):].strip().partition("=")
+                    env[k] = v.strip("'\"")
+    return env
+
+
+def readeck_up(env):
+    url = env.get("READECK_URL")
+    if not url:
+        return False
+    try:
+        with urllib.request.urlopen(url + "/api/info", timeout=2):
+            return True
+    except Exception:
+        return False
+
+
+def ensure_readeck(seed, fresh=False):
+    env = readeck_env()
+    if fresh or not readeck_up(env):
+        print("kodrive: starting local Readeck on port %d ..." % READECK_PORT, file=sys.stderr)
+        subprocess.run(
+            [sys.executable, os.path.join(ROOT, "e2e", "readeck_local.py"), "start",
+             "--port", str(READECK_PORT), "--dir", READECK_DIR],
+            check=True, stdout=subprocess.DEVNULL,
+        )
+        env = readeck_env()
+    if not env.get("READECK_URL", "").startswith("http://127.0.0.1:"):
+        die("refusing: local Readeck env does not point at 127.0.0.1: %r" % env.get("READECK_URL"))
+    if seed:
+        subprocess.run(
+            [sys.executable, os.path.join(ROOT, "e2e", "readeck_local.py"), "seed",
+             "--dir", READECK_DIR, "--count", str(seed)],
+            check=True,
+        )
+    return env
+
+
+# ------------------------------------------------------------------ profile
+
+
+def lua_str(s):
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def write_profile(env, fresh):
+    if fresh and os.path.exists(PROFILE):
+        shutil.rmtree(PROFILE)
+    articles = os.path.join(PROFILE, "articles")
+    for d in (PROFILE, os.path.join(PROFILE, "settings"), os.path.join(PROFILE, "plugins"), articles):
+        os.makedirs(d, exist_ok=True)
+    settings_reader = os.path.join(PROFILE, "settings.reader.lua")
+    if not os.path.exists(settings_reader):
+        with open(settings_reader, "w") as f:
+            f.write(
+                "-- Written by tools/kodrive (fresh profile)\nreturn {\n"
+                '    ["quickstart_shown_version"] = 999999999,\n'
+                '    ["color_rendering"] = true,\n'
+                '    ["start_with"] = "filemanager",\n'
+                '    ["home_dir"] = %s,\n'
+                '    ["lastdir"] = %s,\n'
+                '    ["auto_suspend_timeout_seconds"] = -1,\n'
+                '    ["autoshutdown_timeout_seconds"] = -1,\n'
+                "}\n" % (lua_str(articles), lua_str(articles))
+            )
+    readeck_settings = os.path.join(PROFILE, "settings", "readeck.lua")
+    if env and not fresh and os.path.exists(readeck_settings) and not token_matches(env):
+        print("kodrive: local Readeck was recreated; rewriting settings/readeck.lua", file=sys.stderr)
+        os.remove(readeck_settings)
+    if env and (fresh or not os.path.exists(readeck_settings)):
+        with open(readeck_settings, "w") as f:
+            f.write(
+                "-- Written by tools/kodrive for the LOCAL disposable Readeck. Safe to delete.\n"
+                "return {\n"
+                '    ["readeck"] = {\n'
+                '        ["server_url"] = %s,\n'
+                '        ["auth_token"] = %s,\n'
+                '        ["directory"] = %s,\n'
+                '        ["log_level"] = "debug",\n'
+                "    },\n}\n" % (lua_str(env["READECK_URL"]), lua_str(env["READECK_TOKEN"]), lua_str(articles + "/"))
+            )
+    link = os.path.join(PROFILE, "plugins", "agentdriver.koplugin")
+    if os.path.islink(link) or os.path.exists(link):
+        os.remove(link)
+    os.symlink(DRIVER_PLUGIN, link)
+    return articles
+
+
+def token_matches(env):
+    path = os.path.join(PROFILE, "settings", "readeck.lua")
+    try:
+        with open(path) as f:
+            return lua_str(env["READECK_TOKEN"]) in f.read()
+    except OSError:
+        return False
+
+
+def ensure_readeck_plugin_link(bdir):
+    # Same link `mise run emulator-run` makes; it must live in the build dir
+    # (not the profile) or KOReader would load the plugin twice.
+    link = os.path.join(bdir, "plugins", "readeck.koplugin")
+    if os.path.islink(link):
+        if os.path.realpath(link) != os.path.realpath(READECK_PLUGIN):
+            print("kodrive: note: %s points at %s" % (link, os.path.realpath(link)), file=sys.stderr)
+        return
+    if os.path.exists(link):
+        die("%s exists and is not a symlink; refusing to touch it" % link)
+    os.symlink(READECK_PLUGIN, link)
+
+
+# ------------------------------------------------------------------ lifecycle
+
+
+def cmd_start(args):
+    fresh = "--fresh" in args or not os.path.exists(PROFILE)
+    no_readeck = "--no-readeck" in args
+    fresh_readeck = "--fresh-readeck" in args
+    w, h, dpi = DEVICES["small"]
+    seed = 0
+    open_file = None
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--device":
+            i += 1
+            if args[i] not in DEVICES:
+                die("unknown device %s (known: %s)" % (args[i], ", ".join(DEVICES)))
+            w, h, dpi = DEVICES[args[i]]
+        elif a == "--size":
+            i += 1
+            w, h = (int(x) for x in args[i].lower().split("x"))
+        elif a == "--dpi":
+            i += 1
+            dpi = int(args[i])
+        elif a == "--seed":
+            i += 1
+            seed = int(args[i])
+        elif a == "--open":
+            i += 1
+            open_file = os.path.abspath(args[i])
+        elif a not in ("--fresh", "--no-readeck", "--fresh-readeck"):
+            die("unknown start option " + a)
+        i += 1
+
+    if alive():
+        die("emulator already running (kodrive stop first)")
+    bdir = build_dir()
+    os.makedirs(STATE, exist_ok=True)
+    os.makedirs(ARTIFACTS, exist_ok=True)
+    env = None if no_readeck else ensure_readeck(seed, fresh_readeck)
+    if fresh_readeck:
+        fresh = True  # articles and token from the old server are meaningless now
+    articles = write_profile(env, fresh)
+    ensure_readeck_plugin_link(bdir)
+
+    run_env = dict(os.environ)
+    # Never let a production server leak in through the environment.
+    for k in list(run_env):
+        if k.startswith("READECK_"):
+            del run_env[k]
+    if env:
+        run_env["READECK_URL"] = env["READECK_URL"]
+        run_env["READECK_TOKEN"] = env["READECK_TOKEN"]
+    run_env.update({
+        "KO_HOME": PROFILE,
+        "EMULATE_READER_W": str(w),
+        "EMULATE_READER_H": str(h),
+        "EMULATE_READER_DPI": str(dpi),
+        "AGENTDRIVER_PORT": str(PORT),
+        "AGENTDRIVER_LOG": LOG,
+        "AGENTDRIVER_SHOT_DIR": ARTIFACTS,
+    })
+    target = open_file or articles
+    # Same restart loop as `kodev run` (exit code 85 = restart KOReader).
+    script = 'while true; do ./luajit reader.lua -d "$@"; c=$?; [ $c -eq 85 ] || exit $c; set --; done'
+    with open(LOG, "w") as logf:
+        proc = subprocess.Popen(
+            ["/bin/bash", "-c", script, "kodrive", target],
+            cwd=bdir, env=run_env, stdout=logf, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL, start_new_session=True,
+        )
+    with open(PIDFILE, "w") as f:
+        f.write(str(proc.pid))
+    deadline = time.time() + 90
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            die("emulator exited with %s; see %s" % (proc.returncode, LOG))
+        if alive():
+            break
+        time.sleep(0.3)
+    else:
+        die("driver did not answer within 90s; see " + LOG)
+    call("wait_idle", {"timeout": 30})
+    info = call("info")["result"]
+    print(json.dumps({
+        "ok": True,
+        "driver": BASE,
+        "screen": info.get("screen"),
+        "ui": info.get("ui"),
+        "profile": PROFILE,
+        "articles": articles,
+        "log": LOG,
+        "screenshots": ARTIFACTS,
+        "readeck": env and {"url": env["READECK_URL"], "fixture_url": env.get("READECK_FIXTURE_URL")},
+    }, indent=2))
+
+
+def cmd_stop(args):
+    pid = emulator_pid()
+    if alive():
+        call("quit", quiet_errors=True)
+    deadline = time.time() + 15
+    while pid and time.time() < deadline:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            break
+        time.sleep(0.3)
+    else:
+        if pid:
+            try:
+                os.killpg(pid, signal.SIGTERM)
+                time.sleep(1)
+                os.killpg(pid, signal.SIGKILL)
+            except OSError:
+                pass
+    if os.path.exists(PIDFILE):
+        os.remove(PIDFILE)
+    print("kodrive: emulator stopped")
+    if "--all" in args:
+        subprocess.run([sys.executable, os.path.join(ROOT, "e2e", "readeck_local.py"), "stop", "--dir", READECK_DIR])
+
+
+def cmd_status(_):
+    env = readeck_env()
+    print(json.dumps({
+        "emulator_pid": emulator_pid(),
+        "driver_alive": alive(),
+        "readeck": env.get("READECK_URL") if readeck_up(env) else None,
+        "profile": PROFILE,
+        "log": LOG,
+    }, indent=2))
+
+
+# ------------------------------------------------------------------ commands
+
+
+def split_kv(args):
+    pos, kv = [], {}
+    for a in args:
+        if "=" in a and not a.startswith("=") and a.split("=", 1)[0].isidentifier():
+            k, v = a.split("=", 1)
+            kv[k] = v
+        else:
+            pos.append(a)
+    return pos, kv
+
+
+def absolute_shot(kv):
+    if kv.get("shot"):
+        kv["shot"] = os.path.abspath(kv["shot"])
+
+
+def emit(r):
+    if r is None:
+        die("no answer")
+    if isinstance(r, dict) and r.get("trace") and not os.environ.get("KODRIVE_TRACE"):
+        r.pop("trace")
+    res = r.get("result") if isinstance(r, dict) else None
+    if isinstance(res, dict) and "text" in res and r.get("cmd") in ("tree", "log"):
+        print(res["text"])
+    else:
+        print(json.dumps(r, indent=2, ensure_ascii=False))
+    if isinstance(r, dict) and r.get("ok") is False:
+        sys.exit(2)
+
+
+def need(pos, n, usage):
+    if len(pos) < n:
+        die("usage: kodrive " + usage)
+
+
+def main():
+    argv = sys.argv[1:]
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__)
+        return
+    cmd, args = argv[0], argv[1:]
+    if cmd == "start":
+        return cmd_start(args)
+    if cmd == "stop":
+        return cmd_stop(args)
+    if cmd == "status":
+        return cmd_status(args)
+    if cmd == "readeck-env":
+        env = readeck_env()
+        for k, v in env.items():
+            print("export %s='%s'" % (k, v))
+        return
+    if cmd == "api":
+        env = readeck_env()
+        if not readeck_up(env):
+            die("local Readeck not running")
+        need(args, 2, "api METHOD PATH [JSON]")
+        method, path = args[0].upper(), args[1]
+        data = args[2].encode() if len(args) > 2 else None
+        req = urllib.request.Request(env["READECK_URL"] + path, data=data, method=method, headers={
+            "Authorization": "Bearer " + env["READECK_TOKEN"],
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                body = r.read().decode()
+                print("HTTP %d" % r.status, file=sys.stderr)
+        except urllib.error.HTTPError as e:
+            body = e.read().decode()
+            print("HTTP %d" % e.code, file=sys.stderr)
+        try:
+            print(json.dumps(json.loads(body), indent=2, ensure_ascii=False))
+        except ValueError:
+            print(body)
+        return
+
+    pos, kv = split_kv(args)
+    absolute_shot(kv)
+    timeout = float(kv.get("timeout", 15)) + 120
+    if cmd == "shot":
+        path = os.path.abspath(pos[0]) if pos else os.path.join(ARTIFACTS, time.strftime("shot-%Y%m%d-%H%M%S.png"))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        kv["path"] = path
+        return emit(call("screenshot", kv, timeout))
+    if cmd == "tree":
+        if "--json" in pos:
+            return emit(call("tree", kv, timeout))
+        kv["format"] = "text"
+        return emit(call("tree", kv, timeout))
+    if cmd == "tap":
+        need(pos, 2, "tap X Y")
+        kv.update(x=pos[0], y=pos[1])
+        return emit(call("tap", kv, timeout))
+    if cmd in ("tap-text", "hold-text", "find"):
+        need(pos, 1, cmd + " TEXT [INDEX]")
+        kv["text"] = pos[0]
+        if len(pos) > 1:
+            kv["index"] = pos[1]
+        return emit(call({"tap-text": "tap_text", "hold-text": "hold", "find": "find"}[cmd], kv, timeout))
+    if cmd == "tap-icon":
+        need(pos, 1, "tap-icon ICON_NAME [INDEX]")
+        kv["icon"] = pos[0]
+        if len(pos) > 1:
+            kv["index"] = pos[1]
+        return emit(call("tap_text", kv, timeout))
+    if cmd == "tap-id":
+        need(pos, 1, "tap-id ID")
+        kv["id"] = pos[0]
+        return emit(call("tap_id", kv, timeout))
+    if cmd == "hold":
+        need(pos, 2, "hold X Y")
+        kv.update(x=pos[0], y=pos[1])
+        return emit(call("hold", kv, timeout))
+    if cmd in ("hold-pan", "pan"):
+        need(pos, 4, cmd + " X0 Y0 X1 Y1")
+        kv.update(x0=pos[0], y0=pos[1], x1=pos[2], y1=pos[3])
+        return emit(call("hold_pan" if cmd == "hold-pan" else "pan", kv, timeout))
+    if cmd == "swipe":
+        if len(pos) == 1:
+            info = call("info")["result"]["screen"]
+            w, h = info["w"], info["h"]
+            cx, cy = w // 2, h // 2
+            d = {"left": (int(w * .8), cy, int(w * .2), cy), "right": (int(w * .2), cy, int(w * .8), cy),
+                 "up": (cx, int(h * .8), cx, int(h * .2)), "down": (cx, int(h * .2), cx, int(h * .8))}.get(pos[0])
+            if not d:
+                die("swipe direction must be left/right/up/down")
+            pos = [str(v) for v in d]
+        need(pos, 4, "swipe X0 Y0 X1 Y1 | swipe left|right|up|down")
+        kv.update(x0=pos[0], y0=pos[1], x1=pos[2], y1=pos[3])
+        return emit(call("swipe", kv, timeout))
+    if cmd == "key":
+        need(pos, 1, "key NAME")
+        kv["name"] = pos[0]
+        return emit(call("key", kv, timeout))
+    if cmd == "type":
+        need(pos, 1, "type TEXT")
+        kv["text"] = pos[0]
+        return emit(call("type", kv, timeout))
+    if cmd == "open":
+        need(pos, 1, "open PATH")
+        kv["path"] = os.path.abspath(pos[0])
+        return emit(call("open", kv, timeout))
+    if cmd in ("doc-find", "select-text"):
+        need(pos, 1, cmd + " TEXT")
+        kv["text"] = pos[0]
+        return emit(call(cmd.replace("-", "_"), kv, timeout))
+    if cmd == "eval":
+        need(pos, 1, "eval 'LUA' | eval -")
+        kv["code"] = sys.stdin.read() if pos[0] == "-" else pos[0]
+        return emit(call("eval", kv, timeout))
+    if cmd == "log":
+        if pos:
+            kv["lines"] = pos[0]
+        return emit(call("log", kv, timeout))
+    if cmd in ("home", "wait", "info", "ping"):
+        return emit(call({"wait": "wait_idle"}.get(cmd, cmd), kv, timeout))
+    if cmd == "raw":
+        need(pos, 1, "raw COMMAND [k=v ...]")
+        return emit(call(pos[0], kv, timeout))
+    die("unknown command %s (kodrive --help)" % cmd)
+
+
+if __name__ == "__main__":
+    main()

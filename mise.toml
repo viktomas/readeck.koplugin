@@ -32,18 +32,50 @@ description = "Run the busted spec suite"
 run = "busted spec"
 
 [tasks.lint]
-description = "luacheck the plugin and specs"
-run = "luacheck readeck.koplugin/main.lua readeck.koplugin/_meta.lua readeck.koplugin/readeck spec"
+description = "luacheck the plugin, specs and e2e suite"
+run = "luacheck readeck.koplugin/main.lua readeck.koplugin/_meta.lua readeck.koplugin/readeck spec e2e"
 
 [tasks.format]
-run = "stylua readeck.koplugin/main.lua readeck.koplugin/_meta.lua readeck.koplugin/readeck spec"
+run = "stylua readeck.koplugin/main.lua readeck.koplugin/_meta.lua readeck.koplugin/readeck spec e2e"
 
 [tasks.format-check]
-run = "stylua --check readeck.koplugin/main.lua readeck.koplugin/_meta.lua readeck.koplugin/readeck spec"
+run = "stylua --check readeck.koplugin/main.lua readeck.koplugin/_meta.lua readeck.koplugin/readeck spec e2e"
 
 [tasks.check]
 description = "lint + format-check + test"
 depends = ["lint", "format-check", "test"]
+
+[tasks.e2e]
+description = "Headless end-to-end suite: real plugin in a real KOReader runtime against a disposable LOCAL Readeck (e2e/README.md). Args: [-k test-name] [file-filter...]; env KOREADER_BUILD_DIR, READECK_VERSIONS"
+run = "e2e/run.sh"
+
+[tasks.e2e-server]
+description = "Start a disposable local Readeck (port 18900, fixtures on 18901) with 3 seeded bookmarks and print its env; never touches a real server"
+run = '''
+set -e
+unset READECK_URL READECK_TOKEN
+python3 e2e/readeck_local.py start --port "${READECK_LOCAL_PORT:-18900}" >/dev/null
+python3 e2e/readeck_local.py seed --count "${E2E_SEED_COUNT:-3}" >/dev/null
+echo '# Local Readeck is running. Use it with: eval "$(python3 e2e/readeck_local.py env)"'
+python3 e2e/readeck_local.py env
+'''
+
+[tasks.e2e-server-stop]
+description = "Stop the local Readeck started by e2e-server"
+run = "python3 e2e/readeck_local.py stop"
+
+[tasks.readeck-build-local]
+description = "Build the Readeck server from ../readeck (needs Go + Node) into ../readeck/dist/readeck; use it with READECK_BIN=../readeck/dist/readeck"
+dir = "{{config_root}}/../readeck"
+run = "make setup all && ./dist/readeck version"
+
+[tasks.emulator-drive]
+description = "Start the KOReader emulator under agent control (tools/kodrive; skill koreader-manual-testing) with a fresh profile and a disposable local Readeck on :18960"
+run = "tools/kodrive start --fresh --seed 3"
+
+[tasks.emulator-drive-stop]
+description = "Stop the agent-driven emulator and its local Readeck"
+run = "tools/kodrive stop --all"
 
 [tasks.emulator-build]
 description = "Build the KOReader emulator (long; needs the Homebrew deps from koreader/doc/Building.md)"
@@ -85,7 +117,7 @@ run_probe() {
     return $status
 }
 run_probe 0.22.2 18080 0
-run_probe 0.22.1 18081 1
+run_probe 0.21.6 18081 1
 """
 
 [tasks.emulator-live-probe]

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Notes on Inline Markup</title>
+<meta name="author" content="E2E Fixture">
+<meta name="description" content="Paragraphs that mix plain text with inline elements.">
+</head>
+<body>
+<article>
+<h1>Notes on Inline Markup</h1>
+<p>Plain paragraphs are the easy case, because every character sits in a single text node that starts at the paragraph.</p>
+<p>This paragraph has <em>an emphasised phrase</em> in the middle, and the words after it live in a second text node of the same paragraph.</p>
+<p>Here a <strong>bold run</strong> and a <a href="https://example.com/">link to elsewhere</a> both appear before the sentence finally comes to an end.</p>
+<p>The last paragraph is plain again, so a selection can start in the previous one and end here without trouble.</p>
+</article>
+</body>
+</html>
