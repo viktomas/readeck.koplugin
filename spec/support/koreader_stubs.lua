@@ -257,9 +257,13 @@ local function install_koreader_stubs()
             set_timeout = function() end,
             reset_timeout = function() end,
             file_sink = function(handle)
+                -- Like ltn12.sink.file: closes the file at the end of the body.
                 return function(chunk)
                     if chunk and handle then
                         handle:write(chunk)
+                    elseif handle then
+                        handle:close()
+                        handle = nil
                     end
                     return 1
                 end

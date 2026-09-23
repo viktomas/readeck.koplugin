@@ -189,7 +189,10 @@ local MARKUP_ANNOTATIONS = {
     { "across paragraphs", "ul[1]/li[2]", 7, "p[7]", 7 },
 }
 
-local function create_markup_annotations(id)
+-- without_note: Readeck (0.22-0.23.4) cannot build the EPUB of this page
+-- with the first annotation's note: its footnote link becomes p[1]/a[1] for
+-- the third annotation (see errors_test "EPUB without the article").
+local function create_markup_annotations(id, without_note)
     local created = {}
     for i, a in ipairs(MARKUP_ANNOTATIONS) do
         local remote = H.api:create_annotation(id, {
@@ -198,7 +201,7 @@ local function create_markup_annotations(id)
             end_selector = "section[1]/article[1]/" .. a[4],
             end_offset = a[5],
             color = i % 2 == 0 and "green" or "yellow",
-            note = i == 1 and "from the web" or nil,
+            note = i == 1 and not without_note and "from the web" or nil,
         })
         H.log("remote:", a[1], H.describe(remote.text))
         created[i] = remote
@@ -242,6 +245,27 @@ H.test("import: a full sync writes drawable highlights into the sidecar", functi
     end
     H.screenshot("highlights imported while the book was closed")
     H.no_match(sync_highlights(reader), "Imported")
+end)
+
+H.test("import: annotations made in Readeck before the first download arrive with it", function()
+    H.configure_plugin()
+    local id = H.seed_page("markup.html")
+    local created = create_markup_annotations(id, true)
+    local fm = H.open_filemanager()
+    local summary = H.sync_via_menu(fm)
+    H.match(summary, "Downloaded: 1")
+    H.match(summary, "Highlights imported: " .. #created, "imported by the sync that downloaded the article")
+    H.no_match(summary, "Import failed")
+    local path = H.local_article_by_id(id).path
+    local reader = H.open_reader(path)
+    for i, remote in ipairs(created) do
+        assert_imported(reader, remote, MARKUP_ANNOTATIONS[i][1])
+    end
+    H.close_reader()
+    fm = H.open_filemanager()
+    summary = H.sync_via_menu(fm)
+    H.no_match(summary, "Highlights imported", "not imported twice")
+    H.eq(#(H.doc_setting(path, "annotations") or {}), #created)
 end)
 
 H.test("import, edit the note in KOReader, sync: the same Readeck annotation is updated", function()
@@ -288,10 +312,13 @@ H.test("round trip: highlights exported on one device import on a fresh one", fu
     -- EPUB - which Readeck now exports with <mark>s and a noteref link.
     H.configure_plugin({ directory = H.download_dir .. "device-b/" })
     local fm = H.open_filemanager()
-    H.match(H.sync_via_menu(fm), "Downloaded: 1")
+    local device_b = H.sync_via_menu(fm)
+    H.match(device_b, "Downloaded: 1")
+    -- Imported by the same sync that downloaded the article.
+    H.match(device_b, "Highlights imported: " .. #phrases)
     local path = H.local_article_by_id(id).path
     reader = H.open_reader(path)
-    H.match(sync_highlights(reader), "Imported: " .. #phrases)
+    H.no_match(sync_highlights(reader), "Imported", "nothing left to import in the reader")
     for i, phrase in ipairs(phrases) do
         local label = type(phrase) == "table" and table.concat(phrase, " ... ") or phrase
         local remote = remote_by_id(id, exported[i].readeck_annotation_id)
@@ -360,6 +387,25 @@ H.test("updates: note and colour changes flow both ways", function()
     end
     H.eq(annotation.color, "blue", "colour updated in KOReader")
     H.eq(#H.api:annotations(id), 1, "no duplicates")
+end)
+
+-- Readeck trims notes and caps them at 1024 *characters* (runes).
+H.test("long multibyte and space-padded notes are stored whole and do not re-sync", function()
+    local id, _, reader = open_article()
+    local cjk = string.rep("这是一条很长的笔记。", 50) -- 500 characters, 1500 bytes
+    local padded = "keep this\n\n"
+    local a = H.highlight(reader, "every character sits in a single text node", { note = cjk })
+    local b = H.highlight(reader, "link to elsewhere", { note = padded })
+    local summary = sync_highlights(reader)
+    H.match(summary, "Exported: 2")
+    H.eq(remote_by_id(id, a.readeck_annotation_id).note or "", stored_note(cjk), "500-character note kept whole")
+    H.eq(remote_by_id(id, b.readeck_annotation_id).note or "", stored_note("keep this"), "note trimmed by Readeck")
+
+    summary = sync_highlights(reader)
+    H.no_match(summary, "Updated", "nothing changed, nothing to update")
+    H.no_match(summary, "Exported: [1-9]")
+    H.no_match(summary, "onflict")
+    H.eq(a.note, cjk, "KOReader note untouched")
 end)
 
 H.test("remote deletion: re-exported by default, kept local-only when respected", function()

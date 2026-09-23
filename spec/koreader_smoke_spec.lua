@@ -1304,6 +1304,37 @@ describe("KOReader smoke", function()
         assert.is_true(instance:shouldSkipDownload(local_path, article))
     end)
 
+    it("keeps the whole filename of a long-titled article within the filesystem limit", function()
+        package.path = "./readeck.koplugin/?.lua;" .. package.path
+        install_koreader_stubs()
+        local limits = {}
+        package.loaded["util"] = nil
+        package.preload["util"] = function()
+            return {
+                -- Like KOReader's: cuts the title to `limit` bytes, nothing more.
+                getSafeFilename = function(title, _, limit)
+                    table.insert(limits, limit)
+                    return title:sub(1, limit)
+                end,
+            }
+        end
+
+        local Readeck = dofile("readeck.koplugin/main.lua")
+        local instance = setmetatable({
+            directory = "/tmp/readeck/",
+            findLocalArticlePathByID = function()
+                return nil
+            end,
+        }, { __index = Readeck })
+        local id = "TuqfU9gNGYNKTAeScM6ndJ"
+        local local_path = instance:getDownloadTarget({ id = id, title = string.rep("x", 400) })
+        local name = local_path:match("[^/]+$")
+
+        assert.is_true(#name <= 240, "filename is " .. #name .. " bytes")
+        assert.are.equal(" [rd-id_" .. id .. "].epub", name:sub(-(#id + 14)))
+        assert.are.equal(240 - (#id + 14), limits[1])
+    end)
+
     it("archives completed local files during sync when completion actions are enabled", function()
         package.path = "./readeck.koplugin/?.lua;" .. package.path
         install_koreader_stubs()

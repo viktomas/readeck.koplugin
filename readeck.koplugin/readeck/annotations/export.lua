@@ -585,10 +585,13 @@ function Export.install(Readeck, deps)
     end
 
     function Readeck:syncHighlightsForLocalFilesAsync(options, done)
+        return self:syncHighlightsForPathsAsync(self:listLocalHighlightPaths(), options, done)
+    end
+
+    function Readeck:syncHighlightsForPathsAsync(paths, options, done)
         options = options or {}
         done = done or function() end
 
-        local paths = self:listLocalHighlightPaths()
         local total_counts = new_highlight_counts()
         local ok = true
         local total = #paths

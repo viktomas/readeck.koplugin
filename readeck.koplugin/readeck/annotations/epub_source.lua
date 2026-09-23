@@ -174,6 +174,26 @@ function EpubSource.position_map(path, document)
     return map, reason
 end
 
+-- Whether the EPUB at `path` has at least one readable chapter: true, false,
+-- or nil when that cannot be checked (no archiver). Readeck answers 200 with
+-- a chapter-less EPUB when rendering the article fails - e.g. a note's
+-- footnote link shifting a later annotation's `a[n]` selector (0.22-0.23.4,
+-- internal/bookmarks/converter/epub.go) - and KOReader then shows a blank
+-- book that every later sync skips as already downloaded.
+function EpubSource.has_chapter(path)
+    local read = archive_reader(path)
+    if not read then
+        return nil
+    end
+    local spine = EpubSource.spine(read)
+    for _, href in ipairs(spine or {}) do
+        if read(href) then
+            return true
+        end
+    end
+    return false
+end
+
 function EpubSource.clear_cache()
     cache = {}
     cache_order = {}

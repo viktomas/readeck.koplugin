@@ -201,12 +201,25 @@ function Highlights.local_matches_remote_id(local_highlight, remote_highlight)
         and tostring(local_highlight.readeck_annotation_id or "") == tostring(remote_highlight.id)
 end
 
+-- The note as Readeck stores it: trimmed, and at most 1024 *characters*
+-- (forms_annotations.go `trim max_len:1024`, MaxLen counts runes). Cutting at
+-- 1024 bytes lost most of a long CJK note and could split a character, which
+-- the server turns into U+FFFD, so the two sides never compared equal.
 function Highlights.normalize_note(note)
     note = type(note) == "string" and note or ""
-    if #note > MAX_NOTE_LENGTH then
-        note = note:sub(1, MAX_NOTE_LENGTH)
+    note = note:match("^%s*(.-)%s*$")
+    if #note <= MAX_NOTE_LENGTH then
+        return note
     end
-    return note
+    local count, cut = 0, #note
+    for position in note:gmatch("()[^\128-\191]") do
+        if count == MAX_NOTE_LENGTH then
+            cut = position - 1
+            break
+        end
+        count = count + 1
+    end
+    return (note:sub(1, cut):match("^(.-)%s*$"))
 end
 
 function Highlights.local_note(local_highlight, profile)

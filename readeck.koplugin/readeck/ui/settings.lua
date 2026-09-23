@@ -1,3 +1,4 @@
+local Api = require("readeck.net.api")
 local BD = require("ui/bidi")
 local DataStorage = require("datastorage")
 local InfoMessage = require("ui/widget/infomessage")
@@ -115,7 +116,7 @@ Restart KOReader after editing the config file.]]),
                         text = L("Apply"),
                         callback = function()
                             local myfields = self.settings_dialog:getFields()
-                            self.server_url = myfields[1]:gsub("/*$", "")
+                            self.server_url = Api.normalize_server_url(myfields[1])
                             self.server_info = nil
                             self:saveSettings()
                             if (self.highlight_feature_policy or "auto") == "auto" then
@@ -171,7 +172,8 @@ Username/password login is no longer supported by current Readeck versions.]]),
                         text = L("Apply"),
                         callback = function()
                             local myfields = self.auth_settings_dialog:getFields()
-                            self.auth_token = myfields[1]
+                            -- A pasted token often carries a trailing space or newline.
+                            self.auth_token = (myfields[1] or ""):match("^%s*(.-)%s*$")
                             self:saveSettings()
                             UIManager:close(self.auth_settings_dialog)
                         end,

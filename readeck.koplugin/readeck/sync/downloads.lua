@@ -1,11 +1,14 @@
 local Api = require("readeck.net.api")
 local Dates = require("readeck.core.dates")
+local EpubSource = require("readeck.annotations.epub_source")
+local Defaults = require("readeck.core.defaults")
 local Errors = require("readeck.net.errors")
 local DocSettings = require("docsettings")
 local Event = require("ui/event")
 local FFIUtil = require("ffi/util")
 local InfoMessage = require("ui/widget/infomessage")
 local Metadata = require("readeck.storage.metadata")
+local PartialFile = require("readeck.storage.partial_file")
 local Progress = require("readeck.sync.progress")
 local ProgressMessage = require("readeck.ui.progress_message")
 local Scheduler = require("readeck.sync.scheduler")
@@ -119,14 +122,14 @@ function Downloads.install(Readeck, deps)
             return existing_path, Api.paths.bookmark_article(article.id)
         end
 
-        local title = util.getSafeFilename(article.title, self.directory, 230, 0)
-        local file_ext = ".epub"
-        local local_path = self:getDownloadDirectory()
-            .. title
-            .. article_id_suffix
-            .. article.id
-            .. article_id_postfix
-            .. file_ext
+        -- The whole name has to fit the 255-byte limit of ext4/APFS (and
+        -- 255 UTF-16 units of vfat), and the id suffix is appended after the
+        -- title is cut: budget the title with what follows it, or a long title
+        -- (about 77 CJK characters) fails with "File name too long".
+        local tail = article_id_suffix .. tostring(article.id) .. article_id_postfix .. ".epub"
+        local title_limit = math.max(Defaults.MAX_FILENAME_BYTES - #tail, 16)
+        local title = util.getSafeFilename(article.title, self.directory, title_limit, 0)
+        local local_path = self:getDownloadDirectory() .. title .. tail
         return local_path, Api.paths.bookmark_article(article.id)
     end
 
@@ -204,13 +207,24 @@ function Downloads.install(Readeck, deps)
     end
 
     function Readeck:writeDownloadedArticle(local_path, body)
-        local file, err = io.open(local_path, "wb")
+        local part_path = PartialFile.path_for(local_path)
+        local file, err = io.open(part_path, "wb")
         if not file then
-            Log:error("Could not open downloaded article file:", local_path, err or "")
+            Log:error("Could not open downloaded article file:", part_path, err or "")
             return false
         end
-        file:write(body or "")
+        local written, write_err = file:write(body or "")
         file:close()
+        if not written then
+            Log:error("Could not write downloaded article file:", part_path, write_err or "")
+            PartialFile.discard(part_path)
+            return false
+        end
+        local committed, commit_err = PartialFile.commit(part_path, local_path)
+        if not committed then
+            Log:error("Could not move the download into place:", local_path, commit_err or "")
+            return false
+        end
         return true
     end
 
@@ -240,10 +254,27 @@ function Downloads.install(Readeck, deps)
         return not response or response.error ~= nil or self:getAsyncResponseCode(response) == nil
     end
 
+    -- A 200 is not enough: see EpubSource.has_chapter. Keeping an EPUB without
+    -- the article would show a blank book and stop every later sync from
+    -- fetching a good copy, so drop it and let the next sync try again.
+    function Readeck:acceptDownloadedArticle(local_path, article)
+        if EpubSource.has_chapter(local_path) == false then
+            os.remove(local_path)
+            self.sync_articles_empty_epub = (self.sync_articles_empty_epub or 0) + 1
+            Log:warn("Readeck sent an EPUB without the article, discarded:", article.id, article.title)
+            return false
+        end
+        return true
+    end
+
     function Readeck:handleAsyncDownloadResponse(article, local_path, response)
         local code = self:getAsyncResponseCode(response)
         if code and code >= 200 and code < 300 and response.body then
             if self:writeDownloadedArticle(local_path, response.body) then
+                if not self:acceptDownloadedArticle(local_path, article) then
+                    -- The server's answer, not a transport failure: do not retry.
+                    return failed, "empty_epub"
+                end
                 self:applyDownloadedArticleMetadata(local_path, article)
                 self:syncReadingProgressFromRemote(local_path, article)
                 return downloaded
@@ -270,10 +301,10 @@ function Downloads.install(Readeck, deps)
 
             local ok, err = pcall(function()
                 local child_http = require("socket.http")
-                local child_socket = require("socket")
                 local child_socketutil = require("socketutil")
 
-                local file, open_err = io.open(local_path, "wb")
+                local part_path = PartialFile.path_for(local_path)
+                local file, open_err = io.open(part_path, "wb")
                 if not file then
                     write_result("failed", open_err or "file open failed")
                     return
@@ -290,21 +321,31 @@ function Downloads.install(Readeck, deps)
                     sink = child_socketutil.file_sink(file),
                 }
 
-                local code, _, status = child_socket.skip(1, child_http.request(request))
+                local ok_request, code, _, status = child_http.request(request)
                 child_socketutil:reset_timeout()
+                if not ok_request then
+                    PartialFile.discard(part_path)
+                    write_result("failed", code or "network error")
+                    return
+                end
                 code = tonumber(code)
 
                 if code and code >= 200 and code < 300 then
-                    write_result("downloaded", code)
+                    local committed, commit_err = PartialFile.commit(part_path, local_path)
+                    if committed then
+                        write_result("downloaded", code)
+                    else
+                        write_result("failed", commit_err or "rename failed")
+                    end
                     return
                 end
 
-                os.remove(local_path)
+                PartialFile.discard(part_path)
                 write_result("failed", status or code or "network error")
             end)
 
             if not ok then
-                os.remove(local_path)
+                PartialFile.discard(PartialFile.path_for(local_path))
                 write_result("failed", err)
             end
         end, true)
@@ -326,6 +367,9 @@ function Downloads.install(Readeck, deps)
             payload = FFIUtil.readAllFromFD(job.read_fd) or ""
         end
         local result, detail = payload:match("^([^\t]*)\t?(.*)$")
+        if result == "downloaded" and not self:acceptDownloadedArticle(job.local_path, article) then
+            return failed, "empty_epub"
+        end
         if result == "downloaded" then
             self:applyDownloadedArticleMetadata(job.local_path, article)
             self:syncReadingProgressFromRemote(job.local_path, article)
@@ -366,7 +410,7 @@ function Downloads.install(Readeck, deps)
         local function poll()
             if FFIUtil.isSubProcessDone(job.pid) then
                 local result, detail = self:finishSubprocessDownload(job, article)
-                if result == failed then
+                if result == failed and detail ~= "empty_epub" then
                     result = self:retryDownloadBlockingAfterSubprocessFailure(article, detail)
                 end
                 done(result)
@@ -417,8 +461,8 @@ function Downloads.install(Readeck, deps)
                 headers:add("Accept", "application/epub+zip, */*")
             end,
         }, function(response)
-            local result = self:handleAsyncDownloadResponse(article, local_path, response)
-            if result == failed then
+            local result, reason = self:handleAsyncDownloadResponse(article, local_path, response)
+            if result == failed and reason ~= "empty_epub" then
                 if self:isAsyncClientFailure(response) then
                     self:disableAsyncHTTPClient(self:formatAsyncDownloadFailure(response))
                 end
@@ -435,6 +479,9 @@ function Downloads.install(Readeck, deps)
         local local_path = self:getDownloadTarget(article)
         if not self:shouldSkipDownload(local_path, article) then
             local ok, err = self:getApi():download_article(article.id, local_path)
+            if ok and not self:acceptDownloadedArticle(local_path, article) then
+                return failed
+            end
             if ok then
                 self:applyDownloadedArticleMetadata(local_path, article)
                 self:syncReadingProgressFromRemote(local_path, article)
@@ -544,6 +591,8 @@ function Downloads.install(Readeck, deps)
             skipped = 0,
             failed = 0,
             completed = 0,
+            -- Ids of the articles this run actually downloaded, in order.
+            downloaded_ids = {},
         }
         local remote_article_ids = {}
         local total = #articles
@@ -577,9 +626,10 @@ function Downloads.install(Readeck, deps)
                 remote_article_ids[tostring(article.id)] = true
                 return self:downloadAsync(article, done)
             end,
-            on_result = function(_, result)
+            on_result = function(article, result)
                 if result == downloaded then
                     counts.downloaded = counts.downloaded + 1
+                    table.insert(counts.downloaded_ids, tostring(article.id))
                 elseif result == skipped then
                     counts.skipped = counts.skipped + 1
                 else

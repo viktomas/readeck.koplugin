@@ -24,12 +24,12 @@ local function build_instance(responses, overrides)
                     request.sink(resp.body)
                     request.sink(nil)
                 end
-                -- The fake `socket.skip` used by the test stubs discards the
-                -- leading `n` literal (not `n` values), so `http.request`
-                -- must return exactly (code, headers, status) here for
-                -- `socket.skip(1, http.request(request))` to line up with
-                -- production's `code, resp_headers, status = ...`.
-                return resp.code, resp.headers or {}, resp.status or tostring(resp.code)
+                -- LuaSocket's table form: nil, reason when the connection
+                -- fails (also mid-body), else 1, code, headers, status.
+                if resp.network_error then
+                    return nil, resp.network_error
+                end
+                return 1, resp.code, resp.headers or {}, resp.status or tostring(resp.code)
             end,
         }
     end
@@ -353,6 +353,77 @@ end)
 -- Discovered against a real 0.23.4 server: Readeck content-negotiates its
 -- errors, so a GET without an Accept header gets a 5 KB HTML error page and
 -- the JSON reason is never available to show the user.
+describe("Readeck:callAPI file downloads", function()
+    local PartialFile = require("readeck.storage.partial_file")
+    local dir = os.tmpname() .. "-dl"
+    local target = dir .. "/Title [rd-id_abc123].epub"
+
+    local function exists(path)
+        local handle = io.open(path, "rb")
+        if handle then
+            handle:close()
+            return true
+        end
+        return false
+    end
+
+    before_each(function()
+        os.execute("mkdir -p '" .. dir .. "'")
+    end)
+    after_each(function()
+        os.remove(target)
+        os.remove(PartialFile.path_for(target))
+        os.execute("rmdir '" .. dir .. "' 2>/dev/null")
+    end)
+
+    it("moves a complete download into place and leaves no partial file", function()
+        local instance = build_instance({ { code = 200, body = "PK-epub" } })
+
+        local ok, err =
+            instance:callAPI({ method = "GET", path = "/api/bookmarks/abc123/article.epub", filepath = target })
+
+        assert.is_true(ok)
+        assert.is_nil(err)
+        local handle = assert(io.open(target, "rb"))
+        assert.are.equal("PK-epub", handle:read("*a"))
+        handle:close()
+        assert.is_false(exists(PartialFile.path_for(target)))
+    end)
+
+    it("leaves nothing under the article's name when the connection drops mid-body", function()
+        local instance = build_instance({ { code = 200, body = "PK-half", network_error = "closed" } })
+
+        local ok, err =
+            instance:callAPI({ method = "GET", path = "/api/bookmarks/abc123/article.epub", filepath = target })
+
+        assert.is_nil(ok)
+        assert.are.equal("network_error", err.kind)
+        assert.is_false(exists(target))
+        assert.is_false(exists(PartialFile.path_for(target)))
+    end)
+
+    it("leaves nothing behind on an HTTP error", function()
+        local instance = build_instance({ { code = 500, body = "oops" } })
+
+        local ok = instance:callAPI({ method = "GET", path = "/api/bookmarks/abc123/article.epub", filepath = target })
+
+        assert.is_nil(ok)
+        assert.is_false(exists(target))
+        assert.is_false(exists(PartialFile.path_for(target)))
+    end)
+end)
+
+describe("readeck.storage.partial_file", function()
+    local PartialFile = require("readeck.storage.partial_file")
+
+    it("names the partial file so nothing mistakes it for an article", function()
+        local part = PartialFile.path_for("/books/Title [rd-id_abc123].epub")
+        assert.are.equal("/books/.readeck-abc123.part", part)
+        assert.is_nil(part:find(" [rd-id_", 1, true))
+        assert.are.equal("/tmp/.readeck-probeepub.part", PartialFile.path_for("/tmp/probe.epub"))
+    end)
+end)
+
 describe("Readeck:callAPI content negotiation", function()
     it("asks for JSON on a plain GET with no request body", function()
         local instance, http_calls = build_instance({ { code = 200, body = "[]" } })

@@ -43,6 +43,29 @@ function Api.bookmarks_query(params)
     return Api.paths.bookmarks .. "?" .. query
 end
 
+-- Readeck parses `labels=` as a search string (internal/searchstring): spaces
+-- separate labels that must all be set, and "-", "*" and ":" are operators.
+-- The plugin filters on one literal label, so send it as a quoted exact term.
+function Api.label_filter(label)
+    if type(label) ~= "string" then
+        return nil
+    end
+    label = label:match("^%s*(.-)%s*$")
+    if label == "" then
+        return nil
+    end
+    return '"' .. label:gsub('"', '\\"') .. '"'
+end
+
+-- The server URL as typed on an e-reader keyboard: surrounding spaces, a
+-- trailing slash, or the API root pasted despite the "without /api" hint.
+function Api.normalize_server_url(url)
+    url = tostring(url or ""):match("^%s*(.-)%s*$")
+    url = url:gsub("/+$", "")
+    url = url:gsub("/api$", "")
+    return (url:gsub("/+$", ""))
+end
+
 function Api.new(transport)
     return setmetatable({ transport = transport }, { __index = Api })
 end

@@ -39,6 +39,15 @@ function ArticleReadiness.classify(article)
         return ArticleReadiness.PENDING
     end
 
+    -- Readeck's `loaded` is `state != loading` and `has_article` is "the
+    -- article file exists" (internal/bookmarks/dataset/bookmarks.go). A
+    -- failed extraction does not use state=1: it finishes with state=0,
+    -- loaded=true, has_article=false and `errors` set (measured on 0.23.4
+    -- with an empty page, a 404 and an unreachable host). That is final.
+    if article.loaded == true and article.has_article == false then
+        return ArticleReadiness.ERROR
+    end
+
     if article.has_article == false then
         return ArticleReadiness.PENDING
     end

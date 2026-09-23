@@ -33,6 +33,24 @@ describe("readeck.annotations.highlights", function()
         }, payload)
     end)
 
+    it("normalizes notes the way Readeck stores them: trimmed, 1024 characters", function()
+        assert.are.equal("keep this", Highlights.normalize_note("  keep this\n\n"))
+        assert.are.equal("", Highlights.normalize_note(nil))
+
+        local cjk = string.rep("笔", 1500) -- 1500 characters, 4500 bytes
+        local cut = Highlights.normalize_note(cjk)
+        assert.are.equal(1024 * 3, #cut)
+        assert.are.equal(string.rep("笔", 1024), cut)
+
+        local short_cjk = string.rep("笔", 500)
+        assert.are.equal(short_cjk, Highlights.normalize_note(short_cjk))
+
+        -- A cut that ends on a space is trimmed again, as the server would.
+        local spaced = string.rep("a", 1023) .. " b"
+        assert.are.equal(string.rep("a", 1023), Highlights.normalize_note(spaced))
+        assert.are.equal(string.rep("a", 1024), Highlights.normalize_note(string.rep("a", 2000)))
+    end)
+
     it("orders reversed selections", function()
         local payload = Highlights.build_payload({
             drawer = "underscore",

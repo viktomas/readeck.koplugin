@@ -127,3 +127,58 @@ H.test("highlight rejected during a full sync: reason shown in the sync summary"
     H.match(summary, "Highlight sync failed: 1")
     H.match(summary, "not found", "the reason reaches the summary")
 end)
+
+H.test("download cut off halfway: no truncated file left behind, next sync gets it", function()
+    local id = H.seed_page("lighthouse.html")
+    H.configure_plugin({ server_url = H.start_truncating_proxy() })
+    local fm = H.open_filemanager()
+    local summary = H.sync_via_menu(fm)
+    H.no_match(summary, "Downloaded: 1", "a half-received EPUB is not a download")
+    H.falsy(H.local_article_by_id(id), "no truncated EPUB kept under the article's name")
+    for entry in require("libs/libkoreader-lfs").dir(H.download_dir) do
+        H.falsy(entry:find("%.part$"), "partial download left behind: " .. entry)
+    end
+
+    H.configure_plugin()
+    fm = H.open_filemanager()
+    summary = H.sync_via_menu(fm)
+    H.match(summary, "Downloaded: 1", "the next sync over a good connection fetches it")
+    local article = H.truthy(H.local_article_by_id(id), "article downloaded")
+    H.eq(H.epub_title(article.path), "The Lighthouse Keeper")
+end)
+
+-- Readeck 0.22-0.23.4 bug: building the EPUB, the footnote link it inserts for
+-- a note becomes `p[1]/a[1]` for a later annotation in the same paragraph,
+-- that annotation no longer resolves ("index out of range"), and the EPUB is
+-- sent with HTTP 200 but without its chapter. Kept, it would be a blank book
+-- that no later sync replaces.
+H.test("Readeck sends an EPUB without the article: not kept, retried once it is fixed", function()
+    local id = H.seed_page("markup.html")
+    H.api:create_annotation(id, {
+        start_selector = "section[1]/article[1]/p[1]/em[1]",
+        start_offset = 8,
+        end_selector = "section[1]/article[1]/p[1]",
+        end_offset = 22,
+        color = "yellow",
+        note = "a note",
+    })
+    local second = H.api:create_annotation(id, {
+        start_selector = "section[1]/article[1]/p[1]",
+        start_offset = 102,
+        end_selector = "section[1]/article[1]/p[1]/a[1]",
+        end_offset = 11,
+        color = "yellow",
+    })
+    H.configure_plugin()
+    local fm = H.open_filemanager()
+    local summary = H.sync_via_menu(fm)
+    H.match(summary, "Readeck sent an EPUB without the article, will retry: 1")
+    H.falsy(H.local_article_by_id(id), "the blank EPUB is not kept")
+
+    -- The user removes the annotation that trips Readeck; the next sync gets the book.
+    H.api:delete_annotation(id, second.id)
+    summary = H.sync_via_menu(fm)
+    H.match(summary, "Downloaded: 1")
+    local article = H.truthy(H.local_article_by_id(id), "downloaded once Readeck can build it")
+    H.eq(H.epub_title(article.path), "Nested Markup and Other Text")
+end, { versions = { ["0.21.6"] = "no notes before Readeck 0.22, so no footnote links" } })

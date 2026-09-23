@@ -22,17 +22,18 @@ H.test("API token entered through the settings dialog", function()
     local mark = H.mark()
     H.tap_menu(fm, { "Readeck", "Settings", "Configure Readeck server", { "^Server" } })
     local dialog = H.wait_dialog("Readeck settings", { since = mark, kind = "MultiInputDialog" })
-    H.fill(dialog, H.env.READECK_URL .. "/")
+    -- As typed on an e-reader: a stray space and the API root pasted in.
+    H.fill(dialog, " " .. H.env.READECK_URL .. "/api/ ")
     H.press("Apply", dialog)
 
     mark = H.mark()
     H.tap_menu(fm, { "Readeck", "Settings", "Authentication", "API token" })
     dialog = H.wait_dialog("Authentication settings", { since = mark, kind = "MultiInputDialog" })
-    H.fill(dialog, H.env.READECK_TOKEN)
+    H.fill(dialog, H.env.READECK_TOKEN .. " ")
     H.press("Apply", dialog)
 
     local settings = H.plugin_settings()
-    H.eq(settings.server_url, H.env.READECK_URL, "trailing slash stripped from the server URL")
+    H.eq(settings.server_url, H.env.READECK_URL, "spaces, /api and trailing slash stripped from the server URL")
     H.eq(settings.auth_token, H.env.READECK_TOKEN)
 
     local summary = H.sync_via_menu(fm)
@@ -86,6 +87,59 @@ H.test("OAuth device flow: approve in the browser, then sync", function()
     local summary = H.sync_via_menu(fm)
     H.match(summary, "Downloaded: 1")
     H.truthy(H.local_article_by_id(id), "article downloaded with the OAuth token")
+end)
+
+-- Readeck's OAuth tokens carry no expires_in and come without a refresh
+-- token: they are valid until revoked. A device clock that moved (flat
+-- battery, or a year passing) must not throw the only credential away.
+H.test("OAuth: a clock that moved does not force a new login", function()
+    H.configure_plugin({ auth_token = "" })
+    local fm = H.open_filemanager()
+    local mark = H.mark()
+    H.tap_menu(fm, { "Readeck", "Settings", "Authentication", "Authorize with OAuth" })
+    local prompt = H.wait_dialog("OAuth login started", { since = mark, kind = "ConfirmBox" })
+    H.approve_device(user_code_from_prompt(prompt))
+    H.wait_dialog("OAuth authorization successful%.", { since = mark, timeout = 30, horizon = 6 })
+    H.dismiss_all()
+    local authorized = H.plugin_settings()
+    H.eq(authorized.oauth_refresh_token or "", "", "Readeck issues no refresh token")
+
+    local now = os.time()
+    local cases = {
+        { "clock moved backwards", { token_stored_at = now + 86400 } },
+        { "past the assumed expiry", { token_stored_at = now - 400 * 86400, token_expiry = now - 35 * 86400 } },
+    }
+    for index, case in ipairs(cases) do
+        local id = H.seed_page(index == 1 and "mountains.html" or "bread.html")
+        local settings = {}
+        for key, value in pairs(authorized) do
+            settings[key] = value
+        end
+        for key, value in pairs(case[2]) do
+            settings[key] = value
+        end
+        settings.directory = nil
+        H.configure_plugin(settings)
+        fm = H.open_filemanager()
+        mark = H.mark()
+        local summary = H.sync_via_menu(fm)
+        H.falsy(H.find_dialog("OAuth login started", { since = mark }), case[1] .. ": no new OAuth login")
+        H.match(summary, "Downloaded: 1", case[1])
+        H.truthy(H.local_article_by_id(id), case[1] .. ": downloaded with the existing token")
+    end
+
+    -- The server stays the authority: a token it rejects starts a new login.
+    local revoked = {}
+    for key, value in pairs(authorized) do
+        revoked[key] = value
+    end
+    revoked.access_token = "revoked-token"
+    revoked.directory = nil
+    H.configure_plugin(revoked)
+    fm = H.open_filemanager()
+    mark = H.mark()
+    H.tap_menu(fm, { "Readeck", "Synchronize articles with server" })
+    H.wait_dialog("OAuth login started", { since = mark, kind = "ConfirmBox" })
 end)
 
 H.test("OAuth device flow: denied in the browser", function()

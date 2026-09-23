@@ -3,9 +3,11 @@
 Working notes for the `viktomas/readeck.koplugin` fork. Everything below sits on top
 of upstream `iceyear/readeck.koplugin` and none of it has been offered upstream yet.
 
-State at the time of writing: 221 busted tests, `mise run check` green, 52 e2e
+State at the time of writing: 230 busted tests, `mise run check` green, 58 e2e
 scenarios green against real Readeck **0.21.6, 0.22.1 and 0.23.4** servers (no XFAIL
-left in `e2e/tests/errors_test.lua`).
+left), plus an opt-in real-web-page suite (`E2E_REALWORLD=1`, 12 scenarios over 6
+sites, green on all three versions). 0.23.4 is the newest Readeck release and what the
+user's server runs.
 
 ## How to run things
 
@@ -343,6 +345,74 @@ whitespace-dropping rule uses HTML's default inline/block split, so CSS that
 changes `display` could shift `text()[n]` in mixed block content. Without a
 readable EPUB, export falls back to the old textual rewrite and import refuses.
 
+### Readeck compatibility pass (read against `../readeck`, measured locally)
+
+Each found with a failing e2e test first, against a real local Readeck:
+
+- **Long titles could not be saved.** The title was cut to 230 bytes and
+  ` [rd-id_<22 chars>].epub` (36 bytes) appended after it: 266 bytes, over the
+  255 of ext4/APFS/vfat, so `io.open` failed with "File name too long" (about 77
+  CJK characters is enough). The title is now budgeted against the whole name
+  (`Defaults.MAX_FILENAME_BYTES = 240`).
+- **The filter tag was a search string.** Readeck parses `labels=` with
+  `internal/searchstring`: `to read` meant labels `to` AND `read`, a leading `-`
+  excluded, `*` was a wildcard. `Api.label_filter` sends it as one quoted exact term.
+- **Failed extraction read as "Still processing" forever.** Readeck does not use
+  `state=1` for it: an empty page, a 404 or an unreachable host finish with
+  `state=0, loaded=true, has_article=false` and `errors` set (`loaded` is
+  `state != loading`, `has_article` is "the article file exists"). Now classified
+  as extraction failed.
+- **Notes were cut at 1024 bytes.** Readeck trims and caps at 1024 *runes*
+  (`forms_annotations.go`, `MaxLen`); a 500-character CJK note lost two thirds and
+  could be split mid-character. `normalize_note` now trims and counts characters.
+- **OAuth users were logged out by a clock change.** Readeck's OAuth tokens have no
+  `expires_in` and come without a refresh token; the plugin assumed 365 days, and any
+  clock anomaly (the flat-battery case) or a year passing discarded the only
+  credential and started a new device login. Without a refresh token the stored
+  token is now used until the server answers 401 (which still re-authorizes; e2e
+  covers both).
+- **A dropped connection left a truncated EPUB** under the article's name, which
+  every later sync skipped as "already downloaded" (the blocking path returned a
+  network error without removing the file). All three downloaders now write
+  `.readeck-<id>.part` (hidden, no ` [rd-id_` marker so nothing scans it as an
+  article) and rename on success; `readeck/storage/partial_file.lua`. e2e uses
+  `e2e/fixtures/truncating_proxy.py` to cut downloads in half.
+- **Web-reader annotations on a new article arrived one sync late.** The highlight
+  step runs before downloads, so it only saw articles already on the device; the
+  sync now imports highlights for the articles it just downloaded.
+- **Server URL and token as typed on an e-reader**: surrounding spaces and a pasted
+  `/api` suffix are stripped (`Api.normalize_server_url`).
+- `mise run e2e -- -k ...` reported every file without a matching test as CRASH.
+
+Checked and fine: sort options match Readeck's `forms_bookmarks.go` list; bookmarks
+pending deletion are skipped; the KOReader default download path is the blocking
+client (`DUSE_TURBO_LIB = false`), which is what e2e exercises.
+
+### Readeck upstream bugs (not reported yet)
+
+**EPUB export drops the article when a note precedes an annotation through `a[n]`**
+(0.22.0 - 0.23.4, `internal/bookmarks/converter/epub.go` + `pkg/annotate`). The EPUB
+converter's annotation callback inserts `<a epub:type="noteref">N</a>` after a noted
+annotation *while* `BookmarkAnnotations.AddToNode` is still applying the rest, so for
+later annotations in the same element:
+
+1. a selector through `a[n]` now counts the noteref: `index "11" is out of range`,
+   `addBookmark` returns before `AddChapter`, and the already-streaming response is
+   **HTTP 200 with a chapter-less EPUB** (server log: `server error`);
+2. offsets count the noteref's digits, so later marks in that element are shifted by
+   one character per earlier note (a footnote number can land inside another
+   highlight).
+
+Repro on a fresh server: bookmark `e2e/fixtures/site/markup.html`, annotate
+`p[1]/em[1]`@8..`p[1]`@22 **with a note**, then `p[1]`@102..`p[1]/a[1]`@11; the
+`article.epub` spine is now empty. Happened on 1 of 6 real pages in
+`realworld_test` (danluu.com). Fix upstream: insert noterefs after all annotations
+are applied, or resolve every annotation's boundaries before mutating the DOM.
+The plugin now checks each download (`EpubSource.has_chapter`), discards a
+chapter-less EPUB, says "Readeck sent an EPUB without the article, will retry" and
+retries on later syncs instead of keeping a blank book that no sync would replace.
+The web reader is not affected (no noterefs there).
+
 ## What still has to be done
 
 ### 1. Run a full interactive sync against a real server — the only untested surface left
@@ -405,6 +475,15 @@ already covered by `spec/form_spec.lua`.
   `internal/bookmarks/annotations.go` field for field. The note in an earlier version of
   this file describing a blind pass-through predates the highlight-position rework
   above, which is what introduced this curated payload.
+- Report the Readeck EPUB bug above upstream (Codeberg), with the repro.
+- Readeck only sorts by the chosen key, without a tiebreaker; offset paging over ties
+  (same site, same duration) relies on SQLite returning them in a stable order.
+- Selectors are capped at 256 characters server-side; a very deeply nested
+  paragraph would be rejected (the reason is shown).
+- Imported highlights take crengine's text when the book is open, so a Readeck
+  footnote number misplaced inside the range (bug 2 above) shows in the text.
+- Photo and video bookmarks are never synced (`type=article`); Readeck does
+  produce EPUBs for them.
 - The mock still ignores every query filter (`is_archived`, `type`, `labels`, `sort`)
   and returns the whole store, so no test exercises filtering.
 - The mock answers errors in the JSON shape only. The real server picks its shape from

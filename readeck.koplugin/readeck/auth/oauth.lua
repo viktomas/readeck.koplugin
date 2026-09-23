@@ -531,6 +531,22 @@ function OAuth.install(Readeck, deps)
             return self:authenticateWithApiToken()
         end
 
+        -- Readeck's OAuth access tokens have no expires_in and come without a
+        -- refresh token (internal/auth/oauth2): they are valid until revoked.
+        -- The expiry above is then a local guess, and acting on it - or on a
+        -- clock anomaly - would throw away the only credential and force a
+        -- new device login. Use the token; a revoked one answers 401, and
+        -- callAPI clears it and re-authorizes.
+        if
+            auth_method == "oauth"
+            and not auth_changed
+            and not self:isempty(self.access_token)
+            and self:isempty(self.oauth_refresh_token)
+        then
+            Log:debug("OAuth token has no refresh token; using it until the server rejects it")
+            return true
+        end
+
         if auth_method == "oauth" and self:refreshOAuthToken() then
             return true
         end

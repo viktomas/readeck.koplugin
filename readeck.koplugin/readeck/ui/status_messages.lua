@@ -109,6 +109,12 @@ function StatusMessages.install(Readeck, deps)
         if (counts.article_extraction_failed or 0) > 0 then
             table.insert(parts, T(L("Readeck could not extract: %1"), counts.article_extraction_failed))
         end
+        if (counts.article_empty_epub or 0) > 0 then
+            table.insert(
+                parts,
+                T(L("Readeck sent an EPUB without the article, will retry: %1"), counts.article_empty_epub)
+            )
+        end
         if (counts.completion_actions_disabled or 0) > 0 then
             table.insert(parts, L("Completion actions skipped during sync."))
         end

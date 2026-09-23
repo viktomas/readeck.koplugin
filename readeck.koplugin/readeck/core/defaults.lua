@@ -2,6 +2,9 @@ local Defaults = {}
 
 Defaults.ARTICLE_ID_SUFFIX = " [rd-id_"
 Defaults.ARTICLE_ID_POSTFIX = "]"
+-- Whole article filename, in bytes. Filesystems allow 255; KOReader's own
+-- util.getSafeFilename defaults to 240 to leave some slack.
+Defaults.MAX_FILENAME_BYTES = 240
 Defaults.DOWNLOAD_FAILED = 1
 Defaults.DOWNLOAD_SKIPPED = 2
 Defaults.DOWNLOAD_DONE = 3

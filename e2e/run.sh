@@ -138,6 +138,11 @@ for version in $VERSIONS; do
         wait "$watchdog" 2>/dev/null
         "$PYTHON" e2e/readeck_local.py stop --dir "$work/readeck" >/dev/null 2>&1
         after=$(wc -l < "$RESULTS")
+        # A clean exit without results under -k just means no test in this file matched.
+        if [ "$after" -eq "$before" ] && [ $status -eq 0 ] && [ -n "$name_filter" ]; then
+            echo "no test matches -k ($(( $(date +%s) - file_start ))s)"
+            continue
+        fi
         if [ "$after" -eq "$before" ] || { [ $status -ne 0 ] && ! tail -n +"$((before + 1))" "$RESULTS" | grep -qE '^(FAIL|XPASS)'; }; then
             printf 'CRASH\t%s\t%s\t(whole file)\t0\texit status %s, see %s\n' "$version" "$base" "$status" "$log" >> "$RESULTS"
         fi

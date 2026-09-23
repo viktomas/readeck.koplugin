@@ -786,6 +786,41 @@ function H.stop_server()
     readeck_local("stop")
 end
 
+-- Starts e2e/fixtures/truncating_proxy.py in front of the local Readeck and
+-- returns its URL: EPUB downloads through it stop halfway, like a dropped
+-- connection. Stopped automatically when the test ends.
+function H.start_truncating_proxy()
+    local port = H.config.port + 2
+    local pidfile = current.work_dir .. "/truncating_proxy.pid"
+    os.execute(
+        string.format(
+            "%s %s --port %d --target %s --pidfile %s >/dev/null 2>&1 &",
+            H.config.python,
+            shell_quote(H.config.repo .. "/e2e/fixtures/truncating_proxy.py"),
+            port,
+            shell_quote(H.env.READECK_URL),
+            shell_quote(pidfile)
+        )
+    )
+    current.proxy_pidfile = pidfile
+    H.wait_for(function()
+        local conn = socket.connect("127.0.0.1", port)
+        if conn then
+            conn:close()
+            return true
+        end
+        return false
+    end, { timeout = 10, message = "truncating proxy did not start" })
+    return "http://127.0.0.1:" .. port
+end
+
+local function stop_truncating_proxy()
+    if current and current.proxy_pidfile then
+        os.execute("kill $(cat " .. shell_quote(current.proxy_pidfile) .. ") 2>/dev/null")
+        current.proxy_pidfile = nil
+    end
+end
+
 function H.approve_device(user_code, deny)
     local ok =
         readeck_local(string.format("approve-device --code %s%s", shell_quote(user_code), deny and " --deny" or ""))
@@ -1213,6 +1248,7 @@ local function run_one(index, test, file_slug)
                 H.log("error:", err)
                 H.screenshot("failure")
             end
+            pcall(stop_truncating_proxy)
             local cleanup_ok, cleanup_err = pcall(H.close_ui)
             if not cleanup_ok then
                 H.log("cleanup error:", cleanup_err)

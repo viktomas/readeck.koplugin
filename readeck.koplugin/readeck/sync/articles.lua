@@ -51,7 +51,7 @@ function Articles.install(Readeck, deps)
                 offset = offset,
                 is_archived = 0,
                 type = "article",
-                labels = self.filter_tag,
+                labels = Api.label_filter(self.filter_tag),
                 sort = self.sort_param,
             })
 
@@ -167,7 +167,7 @@ function Articles.install(Readeck, deps)
                 offset = state.offset,
                 is_archived = 0,
                 type = "article",
-                labels = self.filter_tag,
+                labels = Api.label_filter(self.filter_tag),
                 sort = self.sort_param,
             })
 
@@ -369,22 +369,54 @@ function Articles.install(Readeck, deps)
         return false
     end
 
+    local function apply_highlight_counts(action_counts, highlight_counts)
+        action_counts.highlights_imported = highlight_counts.imported or 0
+        action_counts.highlights_exported = highlight_counts.success or 0
+        action_counts.highlights_updated_local = highlight_counts.updated_local or 0
+        action_counts.highlights_updated_remote = highlight_counts.updated_remote or 0
+        action_counts.highlights_conflicts = highlight_counts.conflicts or 0
+        action_counts.highlights_local_only = highlight_counts.remote_deleted or 0
+        action_counts.highlights_skipped = (highlight_counts.skipped or 0)
+            + (highlight_counts.invalid or 0)
+            + (highlight_counts.import_skipped or 0)
+        action_counts.highlights_failed = (highlight_counts.error or 0) + (highlight_counts.import_failed or 0)
+        action_counts.highlights_failed_message = Export.highlight_failure_message(highlight_counts)
+    end
+
+    -- The highlight step runs before downloads, so it only sees articles that
+    -- were already on the device. Annotations made in the Readeck web reader
+    -- on an article that this sync downloads would otherwise only arrive on
+    -- the *next* sync.
+    function Readeck:importHighlightsForDownloaded(downloaded_ids, highlight_counts, done)
+        if not self.export_highlights_before_sync or #(downloaded_ids or {}) == 0 then
+            done(highlight_counts)
+            return
+        end
+        local paths = {}
+        for _, id in ipairs(downloaded_ids) do
+            local path = self:findLocalArticlePathByID(id)
+            if path then
+                table.insert(paths, path)
+            end
+        end
+        local info = self:showSyncStatus(L("Syncing highlights…"))
+        self:syncHighlightsForPathsAsync(paths, {
+            quiet = true,
+            on_progress = function(completed, total)
+                info = self:showSyncStatus(T(L("Syncing highlights… %1/%2"), completed, total), info)
+            end,
+        }, function(_, new_counts)
+            self:closeSyncStatus(info)
+            done(Export.add_highlight_counts(Export.add_highlight_counts(nil, highlight_counts), new_counts))
+        end)
+    end
+
     function Readeck:finishSyncWithArticles(articles, highlight_counts)
         local action_counts = self:processLocalFiles("sync", {
             remote_articles_by_id = self:indexArticlesByID(articles),
         })
         if highlight_counts then
-            action_counts.highlights_imported = highlight_counts.imported or 0
-            action_counts.highlights_exported = highlight_counts.success or 0
-            action_counts.highlights_updated_local = highlight_counts.updated_local or 0
-            action_counts.highlights_updated_remote = highlight_counts.updated_remote or 0
-            action_counts.highlights_conflicts = highlight_counts.conflicts or 0
-            action_counts.highlights_local_only = highlight_counts.remote_deleted or 0
-            action_counts.highlights_skipped = (highlight_counts.skipped or 0)
-                + (highlight_counts.invalid or 0)
-                + (highlight_counts.import_skipped or 0)
-            action_counts.highlights_failed = (highlight_counts.error or 0) + (highlight_counts.import_failed or 0)
-            action_counts.highlights_failed_message = Export.highlight_failure_message(highlight_counts)
+            apply_highlight_counts(action_counts, highlight_counts)
         end
         articles = self:filterArticlesProcessedEarlierInSync(articles, action_counts.processed_article_ids)
         -- Bookmarks that are still loading, permanently failed extraction, or
@@ -395,6 +427,7 @@ function Articles.install(Readeck, deps)
         articles = self:filterUnreadyArticles(articles)
         action_counts.article_not_ready = self.sync_articles_not_ready or 0
         action_counts.article_extraction_failed = self.sync_articles_extraction_failed or 0
+        self.sync_articles_empty_epub = 0
         Log:debug("Number of articles:", #articles)
 
         local info = self:showSyncStatus(L("Checking articles…"))
@@ -409,18 +442,28 @@ function Articles.install(Readeck, deps)
                             + self.local_progress_updates_in_sync
                     end
                     self.local_progress_updates_in_sync = 0
+                    action_counts.article_empty_epub = self.sync_articles_empty_epub or 0
                     Status.add(action_counts, self:processRemoteDeletes(articles_by_id))
 
-                    UIManager:show(InfoMessage:new({
-                        text = self:formatSyncMessage(
-                            download_counts.downloaded,
-                            download_counts.skipped,
-                            download_counts.failed,
-                            action_counts
-                        ),
-                    }))
-                    self.sync_in_progress = false
-                    self:refreshCurrentDirIfNeeded()
+                    self:importHighlightsForDownloaded(
+                        download_counts.downloaded_ids,
+                        highlight_counts,
+                        function(merged_counts)
+                            if merged_counts then
+                                apply_highlight_counts(action_counts, merged_counts)
+                            end
+                            UIManager:show(InfoMessage:new({
+                                text = self:formatSyncMessage(
+                                    download_counts.downloaded,
+                                    download_counts.skipped,
+                                    download_counts.failed,
+                                    action_counts
+                                ),
+                            }))
+                            self.sync_in_progress = false
+                            self:refreshCurrentDirIfNeeded()
+                        end
+                    )
                 end,
             })
         end)

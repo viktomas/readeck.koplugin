@@ -35,6 +35,33 @@ H.test("filter tag: only bookmarks with that label are downloaded", function()
     end
 end)
 
+-- Readeck parses `labels=` as a search string: unquoted, "to read" is two
+-- labels that must both be set, and a leading "-" would exclude.
+H.test("filter tag with a space or search syntax is matched as one exact label", function()
+    local tagged = H.seed_page("lighthouse.html", { labels = { "to read" } })
+    local others = {
+        H.seed_page("bread.html", { labels = { "read" } }),
+        H.seed_page("clocks.html", { labels = { "to", "read" } }),
+    }
+    local dashed = H.seed_page("mountains.html", { labels = { "-later" } })
+    H.configure_plugin()
+    local fm = H.open_filemanager()
+    set_input(fm, selection({ "^Only download articles with tag" }), "Enter a single tag", "to read", "OK")
+
+    local summary = H.sync_via_menu(fm)
+    H.match(summary, "Downloaded: 1\n")
+    H.truthy(H.local_article_by_id(tagged), "bookmark labelled 'to read' downloaded")
+    for _, id in ipairs(others) do
+        H.falsy(H.local_article_by_id(id), "bookmark without the 'to read' label skipped")
+    end
+
+    set_input(fm, selection({ "^Only download articles with tag" }), "Enter a single tag", "-later", "OK")
+    summary = H.sync_via_menu(fm)
+    H.match(summary, "Downloaded: 1\n")
+    H.truthy(H.local_article_by_id(dashed), "bookmark labelled '-later' downloaded")
+    H.falsy(H.local_article_by_id(others[1]), "'-later' is a label, not 'everything except later'")
+end)
+
 H.test("ignored tags: bookmarks with any of them are not downloaded", function()
     local keep = H.seed_page("lighthouse.html", { labels = { "fiction" } })
     local skip1 = H.seed_page("bread.html", { labels = { "later" } })

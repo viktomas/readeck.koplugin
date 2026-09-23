@@ -1,9 +1,9 @@
 local Api = require("readeck.net.api")
 local Errors = require("readeck.net.errors")
 local JSON = require("json")
+local PartialFile = require("readeck.storage.partial_file")
 local UIManager = require("ui/uimanager")
 local http = require("socket.http")
-local lfs = require("libs/libkoreader-lfs")
 local ltn12 = require("ltn12")
 local socket = require("socket")
 local socketutil = require("socketutil")
@@ -88,10 +88,11 @@ function Client.install(Readeck, deps)
             body_source = body
         end
 
+        local part_path = filepath ~= nil and PartialFile.path_for(filepath) or nil
         if filepath ~= nil then
-            local file, open_err = io.open(filepath, "wb")
+            local file, open_err = io.open(part_path, "wb")
             if not file then
-                Log:error("Could not open response file:", filepath, open_err or "")
+                Log:error("Could not open response file:", part_path, open_err or "")
                 return nil, Errors.new(Errors.KIND.FILE_ERROR)
             end
             socketutil:set_timeout(self.file_block_timeout, self.file_total_timeout)
@@ -114,8 +115,16 @@ function Client.install(Readeck, deps)
             end
         end
 
-        local code, resp_headers, status = socket.skip(1, http.request(request))
+        local ok_request, code, resp_headers, status = http.request(request)
         socketutil:reset_timeout()
+        if not ok_request then
+            -- The connection failed or dropped mid-body; `code` is the reason.
+            Log:error("Request failed:", code or "unknown error", "URL:", request.url)
+            if part_path then
+                PartialFile.discard(part_path)
+            end
+            return nil, Errors.new(Errors.KIND.NETWORK_ERROR)
+        end
 
         if resp_headers then
             Log:debug("Response code:", code, "Status:", status or "nil")
@@ -164,6 +173,11 @@ function Client.install(Readeck, deps)
 
         if code == 200 or code == 201 or code == 202 or code == 204 then
             if filepath ~= nil then
+                local committed, commit_err = PartialFile.commit(part_path, filepath)
+                if not committed then
+                    Log:error("Could not move the download into place:", filepath, commit_err or "")
+                    return nil, Errors.new(Errors.KIND.FILE_ERROR)
+                end
                 Log:info("File downloaded successfully to", filepath)
                 return true, nil, resp_headers
             else
@@ -203,11 +217,8 @@ function Client.install(Readeck, deps)
                 Log:error("Server rejected the request:", error_message)
             end
             if filepath ~= nil then
-                local entry_mode = lfs.attributes(filepath, "mode")
-                if entry_mode == "file" then
-                    os.remove(filepath)
-                    Log:warn("Removed failed download:", filepath)
-                end
+                PartialFile.discard(part_path)
+                Log:warn("Discarded failed download:", filepath)
             else
                 Log:error("Communication with server failed:", code)
             end

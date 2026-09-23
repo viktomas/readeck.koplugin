@@ -30,6 +30,7 @@ Readeck. Nothing in the normal loop uses them:
 | `mise run check` | ~2 s | luacheck + stylua + busted (unit, pure logic, i18n coverage) | every change; the commit gate |
 | `mise run e2e` | ~1 min | the plugin used through its menus/dialogs in a real headless KOReader against a real local Readeck; screenshots of every dialog | any change to sync, net, auth, annotations, UI |
 | `READECK_VERSIONS="0.21.6 0.22.1 0.23.4" mise run e2e` | ~3 min | same, per server version (feature gates in `readeck/core/features.lua`) | changes near version gating or payloads; CI runs this |
+| `E2E_REALWORLD=1 mise run e2e -- realworld` | ~1 min | highlight positions on real web pages (Wikipedia en/zh/ja, blogs, code), import and re-export, checked against Readeck's own resolution; needs the internet, not in CI | changes to `annotations/` (position map, xhtml, epub source) |
 | `tools/kodrive …` (skill `koreader-manual-testing`) | minutes | the real emulator GUI, by eye | layout/UX questions, reproducing a UI bug, final visual check |
 | `mise run emulator-smoke` / `emulator-network-smoke` | ~5 s | plugin loads in KOReader; client vs the python mock | legacy smoke, cheap |
 | `mise run emulator-live-probe` | ~10 s | read-only against the **real** server | confirming real-server behaviour/shapes |

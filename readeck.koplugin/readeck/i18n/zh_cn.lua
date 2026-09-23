@@ -87,6 +87,7 @@ local zh = {
     ["Completion actions skipped during sync."] = "同步时已跳过完成动作。",
     ["Still processing on Readeck: %1"] = "仍在 Readeck 中处理：%1",
     ["Readeck could not extract: %1"] = "Readeck 无法提取内容：%1",
+    ["Readeck sent an EPUB without the article, will retry: %1"] = "Readeck 发送的 EPUB 不含文章内容，将重试：%1",
     ["Success: %1"] = "成功：%1",
     ["Imported: %1"] = "已导入：%1",
     ["Exported: %1"] = "已导出：%1",

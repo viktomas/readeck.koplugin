@@ -18,6 +18,7 @@ function Status.new_counts(initial)
         failed = 0,
         article_not_ready = 0,
         article_extraction_failed = 0,
+        article_empty_epub = 0,
     }
     for key, value in pairs(initial or {}) do
         counts[key] = value

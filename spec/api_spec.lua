@@ -17,6 +17,27 @@ describe("readeck.net.api", function()
         )
     end)
 
+    it("normalizes a server URL typed on an e-reader keyboard", function()
+        assert.are.equal("http://n:8112", Api.normalize_server_url(" http://n:8112/ "))
+        assert.are.equal("https://r.example/readeck", Api.normalize_server_url("https://r.example/readeck/api/"))
+        assert.are.equal("https://r.example", Api.normalize_server_url("https://r.example//"))
+        assert.are.equal("https://r.example/apis", Api.normalize_server_url("https://r.example/apis"))
+        assert.are.equal("", Api.normalize_server_url(nil))
+    end)
+
+    it("sends the filter tag as one exact Readeck search term", function()
+        assert.are.equal('"research notes"', Api.label_filter(" research notes "))
+        assert.are.equal('"-later"', Api.label_filter("-later"))
+        assert.are.equal('"a\\"b"', Api.label_filter('a"b'))
+        assert.is_nil(Api.label_filter(""))
+        assert.is_nil(Api.label_filter("   "))
+        assert.is_nil(Api.label_filter(nil))
+        assert.are.equal(
+            "/api/bookmarks?labels=%22research%20notes%22",
+            Api.bookmarks_query({ labels = Api.label_filter("research notes") })
+        )
+    end)
+
     it("can be tested with a mock Readeck transport", function()
         local requests = {}
         local client = Api.new(function(request)

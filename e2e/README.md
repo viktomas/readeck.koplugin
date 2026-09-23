@@ -28,7 +28,22 @@ mise run e2e-server-stop
 `READECK_URL`/`READECK_TOKEN`, the harness only uses the env printed by the
 server it started, and both the test-side API client and the plugin settings
 writer refuse any URL that is not loopback. Ports stay within 18900-18999
-(suite default: 18920 for Readeck, 18921 for the fixture site).
+(suite default: 18920 for Readeck, 18921 for the fixture site, 18922 for
+the truncating proxy).
+
+**Real web pages** (opt-in, needs the internet; not run in CI):
+
+```bash
+E2E_REALWORLD=1 mise run e2e -- realworld
+E2E_REALWORLD_URLS="https://a https://b" E2E_REALWORLD_COUNT=60 E2E_REALWORLD_SEED=2 mise run e2e -- realworld
+```
+
+`tests/realworld_test.lua` bookmarks real pages on the local Readeck, lets
+`fixtures/annotation_oracle.py` pick ranges from the stored article HTML
+(independently of `position_map.lua`), creates them through the API so Readeck
+resolves them, and checks import (crengine shows Readeck's text) and
+re-export (Readeck resolves the plugin's selectors to the same text), both on
+a plain EPUB and on one downloaded with Readeck's marks and note links.
 
 ## Layout
 
@@ -42,7 +57,13 @@ e2e/
   fixtures/site/       static fixture pages (inline.html has <em>/<strong>/<a>;
                        markup.html has nested inline markup, wrapped source
                        lines, entities, <br>, UTF-8 multibyte text and emoji,
-                       blockquote and list)
+                       blockquote and list; empty.html has nothing to extract)
+  fixtures/truncating_proxy.py
+                       reverse proxy that cuts every EPUB download in half
+                       (H.start_truncating_proxy)
+  fixtures/annotation_oracle.py
+                       picks annotation ranges in real article HTML for
+                       realworld_test.lua
   lib/main.lua         entry point run by KOReader's luajit
   lib/bootstrap.lua    headless KOReader: KO_HOME temp dir, dummy framebuffer
                        and input, only readeck.koplugin registered

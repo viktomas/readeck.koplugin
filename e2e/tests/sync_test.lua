@@ -128,3 +128,49 @@ H.test("offline add goes to the queue and is created on the next sync", function
     H.eq(list[1].url, url)
     H.eq(#(H.plugin_settings().download_queue or {}), 0, "queue emptied")
 end)
+
+H.test("long titles still make a valid filename (255-byte limit)", function()
+    -- 300 ASCII characters, and 120 CJK characters (360 bytes in UTF-8).
+    local ascii = string.rep("Very long headline ", 16):sub(1, 300)
+    local cjk = string.rep("长标题测试文章", 18):sub(1, 360)
+    local ids = { H.seed_page("lighthouse.html"), H.seed_page("clocks.html") }
+    H.api:update_bookmark(ids[1], { title = ascii })
+    H.api:update_bookmark(ids[2], { title = cjk })
+
+    H.configure_plugin()
+    local fm = H.open_filemanager()
+    local summary = H.sync_via_menu(fm)
+    H.match(summary, "Downloaded: 2")
+    H.no_match(summary, "Failed")
+    for _, id in ipairs(ids) do
+        local article = H.truthy(H.local_article_by_id(id), "file for " .. id)
+        H.truthy(#article.name <= 250, "filename is " .. #article.name .. " bytes")
+        H.eq(require("util").fixUtf8(article.name, "?"), article.name, "filename is valid UTF-8")
+    end
+
+    -- Opening one creates its sidecar next to it, which needs a valid name too.
+    local reader = H.open_reader(H.local_article_by_id(ids[2]).path)
+    H.truthy(reader.document, "the long-titled article opens")
+    H.close_reader()
+    summary = H.sync_via_menu(fm)
+    H.match(summary, "Skipped: 2")
+end)
+
+H.test("bookmark whose extraction failed is reported as such, not as still processing", function()
+    -- Readeck finishes such a bookmark with state=0, loaded=true,
+    -- has_article=false and errors={"could not extract content"}.
+    local empty = H.seed_page("empty.html")
+    local bookmark = H.api:get_bookmark(empty)
+    H.eq(bookmark.loaded, true, "server finished loading the empty page")
+    H.eq(bookmark.has_article, false, "server has no article for the empty page")
+    local ready = H.seed_page("lighthouse.html")
+
+    H.configure_plugin()
+    local fm = H.open_filemanager()
+    local summary = H.sync_via_menu(fm)
+    H.match(summary, "Downloaded: 1\n")
+    H.match(summary, "Readeck could not extract: 1")
+    H.no_match(summary, "Still processing", "a finished bookmark is not still processing")
+    H.truthy(H.local_article_by_id(ready), "readable bookmark downloaded")
+    H.falsy(H.local_article_by_id(empty), "empty bookmark not downloaded")
+end)
