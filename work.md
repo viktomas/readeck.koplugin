@@ -3,8 +3,9 @@
 Working notes for the `viktomas/readeck.koplugin` fork. Everything below sits on top
 of upstream `iceyear/readeck.koplugin` and none of it has been offered upstream yet.
 
-State at the time of writing: 168 busted tests, `mise run check` green, verified
-against a real Readeck **0.23.4** server.
+State at the time of writing: 221 busted tests, `mise run check` green, 52 e2e
+scenarios green against real Readeck **0.21.6, 0.22.1 and 0.23.4** servers (no XFAIL
+left in `e2e/tests/errors_test.lua`).
 
 ## How to run things
 
@@ -21,6 +22,8 @@ Verification ladder, cheapest first. Each rung catches things the one below cann
 | `mise run check` | Unit tests, lint, formatting. Pure logic only. |
 | `mise run emulator-smoke` | The plugin loads and builds its menus in a real KOReader runtime. |
 | `mise run emulator-network-smoke` | The HTTP client works against `spec/mock_readeck_server.py`, for two server versions. |
+| `mise run e2e` | The plugin as a user drives it (menus, dialogs, reader, highlights) against a disposable **local real** Readeck. See `e2e/README.md`. `READECK_VERSIONS="0.21.6 0.22.1 0.23.4"` for the version matrix CI runs. |
+| `tools/kodrive` / `mise run emulator-drive` | The real emulator GUI, driven by an agent: screenshots, widget tree, taps, text selection. See `.agents/skills/koreader-manual-testing/SKILL.md`. |
 | `mise run emulator-live-probe` | Read-only against a **real** server. |
 | `mise run emulator-live-probe-write-mock-smoke` | Rehearses the write probe offline. |
 | `mise run emulator-live-probe-write` | **Writes** to a real server. See the safety note below. |
@@ -31,6 +34,11 @@ Verification ladder, cheapest first. Each rung catches things the one below cann
 READECK_URL=http://n:8112 READECK_TOKEN=<token> mise run emulator-seed
 mise run emulator-run
 ```
+
+The agent-facing versions of all this are the project skills in `.agents/skills/`
+(`readeck-plugin-dev`, `koreader-manual-testing`, `forgejo-ci`). CI runs `check` and
+the e2e matrix on every push to `forgejo` (http://n:3000/tomas/readeck.koplugin,
+`.forgejo/workflows/ci.yml`); `tools/ci-logs` shows runs and logs.
 
 ### The write probe's safety property
 
@@ -175,6 +183,166 @@ Unknown fields in an annotation POST are ignored by the server, so the KOReader-
 keys that `export.lua` blindly includes are harmless — worth knowing, but it was my first
 and wrong hypothesis for the 400.
 
+### The end-to-end suite and what it found
+
+`e2e/` runs the plugin headlessly inside real KOReader (emulator build or the
+Linux release tarball) against a fresh local Readeck per test, driving it
+through the touch menu, dialogs, file browser and a real crengine reader, and
+checking both local files and the server. 44 scenarios, about a minute. It
+retires most of item 1 below. Bugs it found, all against real servers:
+
+- **Every highlight export failed.** Current crengine writes xpointers with an
+  explicit index on every step (`/body[1]/DocFragment[1]/body[1]/main[1]/...`)
+  and `clean_selector` only stripped the bare prefix, so Readeck answered
+  `element "/body[1]/..." not found` for every highlight. The live write probe
+  never saw it because it hand-built `section/p[1]` selectors. Fixed.
+- **Text after inline markup was exported onto the wrong words.** KOReader's
+  `p[2]/text()[2].39` counts from the second text node, Readeck's `p[2]` offset
+  from the start of the paragraph; the plugin sent 39 as-is (and a unit test
+  asserted it). Fixed by the position map below.
+- **"Remove local files missing from Readeck" deleted articles that still
+  exist**: anything outside the fetched batch (`articles_per_sync`), and
+  bookmarks still loading, which Readeck leaves out of `type=article`
+  listings - so the readiness fix above never protected them. Candidates are
+  now confirmed per bookmark with the server (404, archived or pending
+  deletion) before a file is removed; `readeck/sync/remote_presence.lua`.
+- **"Tags to add to new articles" broke adding any article, "Send review as
+  tags" broke every sync**: `table.insert(tags, tag:gsub(...))` passed gsub's
+  match count as a position. The error was swallowed by KOReader's handler
+  sandbox, so the user saw nothing. `readeck/core/tags.lua`.
+- **A wrong API token read as "Requesting article list failed."** The retried
+  401 came back as a generic HTTP error. It is now an auth error, and the
+  list failure names the cause (auth, unreachable server, server's reason).
+- **Notes were stripped for Readeck 0.22.0/0.22.1.** Measured with release
+  binaries: notes arrived in 0.22.0 (0.21.6 drops them), the gate said 0.22.2.
+
+- **A finished article deleted on the server failed its completion action on
+  every sync, with no reason shown.** `removeArticle` guards the archive/delete
+  step with a highlight sync so highlights are not lost, and that guard's
+  `list_annotations` call 404s once the bookmark is gone - previously reported
+  as a bare, permanent "Completion action failed: 1". A 404/410 on a
+  bookmark-scoped request means the goal ("this bookmark is
+  archived/deleted") is already met, not that the request failed:
+  `Errors.is_not_found` names that check, `syncHighlightsForArticle` now
+  returns it as `bookmark_missing` instead of an error, and `removeArticle`
+  (both at the guard and, for the race where the bookmark disappears between
+  the guard and the archive/delete call itself) finishes the local side and
+  counts it as done rather than retrying forever. e2e:
+  `e2e/tests/errors_test.lua`, "finished article deleted on the server".
+- **The full-sync summary dropped the highlight failure reason.** The
+  per-article highlight summary already carried it (`error_message` /
+  `import_error_message`); `finishSyncWithArticles` only ever copied the bare
+  counts into `highlights_failed`. `Export.highlight_failure_message` picks
+  the one reason worth keeping, and the summary now reads
+  `Highlight sync failed: 1 (element "..." not found)` like the per-article
+  one already did.
+
+Both were XFAIL in `e2e/tests/errors_test.lua`; both are normal passing tests
+now.
+
+### Highlight positions: a bidirectional KOReader <-> Readeck mapping
+
+Imported Readeck annotations were stored with the Readeck selector as the
+KOReader position (`section[1]/article[1]/p[4].4`), which crengine cannot
+resolve, so they were never drawn; and exports were only right for the first
+text node of an element. Both are fixed by
+`readeck/annotations/position_map.lua`, which translates in both directions
+from the downloaded EPUB alone, and is used by export, import, overlap/dedupe
+and a one-time repair of highlights imported by earlier versions.
+
+**What the two sides count** (read in `../readeck` and measured against real
+servers and a real crengine, not assumed):
+
+- Readeck (`pkg/annotate`, `getTextNodeBoundary`) evaluates the selector as an
+  XPath relative to the `<body>` of the *stored article HTML*, and the offset
+  counts **Unicode code points** (`[]rune`) over **all** descendant text nodes
+  of that element, **raw**: `"paragraph\n   was wrapped"` is 25 characters.
+  Its web reader uses the text node's parent element as the selector.
+- crengine xpointers name one **text node** (`p[2]/text()[2].5`,
+  `p[1]/em[1]/text()[1].3`), offsets are code points too (lChar32; verified
+  with CJK and emoji), but **after parse-time whitespace handling**
+  (`PreProcessXmlString`): runs of space/tab/CR/LF collapse to one space, and
+  whitespace-only text nodes are dropped when they are the first child of a
+  block or sit among block children (`ldomElementWriter::onText`, autoboxing),
+  so they do not count in `text()[n]`. NBSP is kept. The format depends on the
+  DOM version: current KOReader writes `/body[1]/DocFragment[1]/body[1]/...`
+  with every index, older DOM versions the bare form; both are read.
+- The EPUB (`internal/bookmarks/converter/epub.go`, template `x-epub.templ`,
+  `epub/bookmark.jet.html` in 0.21) is one spine document per bookmark
+  (`DocFragment[1]`): a header (`h1.title`, `p.desc`, `ul.info`) and then the
+  stored article HTML copied verbatim into `<main class="content">` (class list
+  in 0.21; a photo/video bookmark has a `main.photo` first, which is why the
+  map looks for the class). **Since 0.22 the EPUB also contains the annotations
+  that existed at export time**: each annotated run wrapped in an
+  attribute-less `<mark>`, and a footnote link `<a epub:type="noteref">N</a>`
+  after an annotation with a note (plus an `<aside>` list of notes after
+  `main`). Readeck's DOM has neither, so with a naive mapping every EPUB
+  downloaded after a highlight sync would shift positions (`p[2]/mark[1]`
+  does not exist on the server, the noteref's "1" is not in its text). The map
+  treats those marks as transparent and noteref text as absent.
+
+**Design: compute the mapping in Lua from the EPUB's XHTML** (option (a)).
+`readeck/annotations/epub_source.lua` reads `container.xml` -> OPF spine ->
+the chapter holding `<main>` with `ffi/archiver` (or the open crengine
+document's `getDocumentFileContent`), `readeck/annotations/xhtml.lua` builds
+a tree (raw text, entities decoded), and the map indexes every text node
+once with both its crengine identity (element indexes counting every sibling,
+`text()[k]` among kept text nodes, a collapsed<->raw offset table) and its
+Readeck identity (element indexes without marks/noterefs, position in the
+article's raw text). A position is converted through that global raw offset.
+Boundaries follow Readeck: a start at the end of a node moves to the next
+node, an end stays at the end of the previous one. Why this rather than the
+alternatives:
+
+- (b) "pending until the book is open" would leave a full sync's imports
+  invisible in the history/bookmark list until the book is opened, needs a new
+  pending state in sidecars and a hook in `onReaderReady`, and crengine cannot
+  do the arithmetic anyway: it has thrown the raw whitespace away, and Readeck
+  offsets are raw. Some raw source is needed whatever happens.
+- (c) opening a crengine document headlessly per article during sync is slow
+  on e-readers, touches the crengine cache, and still has the raw-whitespace
+  problem.
+- The crengine-specific part of (a) is small (collapse rule + which
+  whitespace-only nodes are dropped), and it is **verified against the real
+  crengine**: during development every text node of the fixtures was
+  compared (predicted xpointer valid, `+1` invalid, same text), and the e2e
+  suite asserts every imported highlight with
+  `document:getTextFromXPointers(pos0, pos1)`. When the book is open the
+  plugin also checks each import with crengine before adding it, and uses
+  crengine's text as the highlight text.
+
+Imported highlights now get: xpointer `pos0`/`pos1`/`page`, `text`, `chapter`
+(TOC title when open, the chapter `<title>` otherwise), colour and note, and
+`datetime` in **local time** (Readeck's `created` is UTC; it used to be stored
+as if it were local). An annotation that cannot be placed is not imported and
+the summary says why (`Import failed: 1 (its text is not in the downloaded
+article)`). Linked sync and edits already went by `readeck_annotation_id`, so
+import -> edit in KOReader -> sync updates the same annotation (e2e-tested,
+and by hand in the emulator: screenshots in
+`references/manual-artifacts/highlight-import/`). Highlights imported by
+earlier versions (position not starting with `/`) are repaired from the
+server's annotation on the next sync. Overlap/dedupe compares ranges of the
+article text, so `p[2]/em[1]` and `p[2]` selectors compare correctly.
+
+Tests: `spec/position_map_spec.lua` runs on chapter files of real EPUBs
+(`spec/fixtures/readeck_epub/`: plain, with marks, with noterefs, 0.21.6
+template) and round-trips every crengine position of every fixture; each
+rule was checked by breaking it. e2e: inline markup at start/middle/end,
+wrapped lines, entities, `<br>`, blockquote, list, multibyte and emoji
+(offsets asserted in characters), import drawn (open book and sidecar/full
+sync), import -> edit -> same annotation updated, and a round trip export ->
+import on a second device profile whose EPUB carries Readeck's marks and a
+noteref.
+
+Limits: an attribute-less `<mark>` that was in the original article is
+indistinguishable from Readeck's and treated as transparent; tabs inside
+`<pre>` (crengine expands them) are not modelled; if the article changed on
+the server after the download, positions are computed against the local copy
+(the server then rejects or mis-places them, and the reason is shown); the
+whitespace-dropping rule uses HTML's default inline/block split, so CSS that
+changes `display` could shift `text()[n]` in mixed block content. Without a
+readable EPUB, export falls back to the old textual rewrite and import refuses.
+
 ## What still has to be done
 
 ### 1. Run a full interactive sync against a real server — the only untested surface left
@@ -202,12 +370,16 @@ yields — see `newsdownloader.koplugin/main.lua:202` — which would also make 
 inside a coroutine, so every entry point into sync has to be audited; this is a real
 refactor, not a swap.
 
-### 3. `callAPI` discards response headers
+### 3. `callAPI` discards response headers — fixed for bookmark creation
 
-`client.lua` reads `resp_headers` only to log it. Bookmark creation returns 202 with the
-new id in a `Bookmark-Id`/`Location` header, so that id is currently unreachable. No bug
-today — `addArticle`'s only consumer checks truthiness — but it blocks "add an article
-and then immediately sync it".
+`client.lua` used to read `resp_headers` only to log it. `callAPI` now returns them as a
+third value (existing two-value callers are unaffected; Lua ignores the extra return),
+and `Api:create_bookmark` uses `Api.bookmark_id_from_headers` (checked against `../readeck`:
+`internal/bookmarks/... ` answers 202 with the id in `Bookmark-Id`, falling back to the
+trailing segment of `Location`) to put the id onto its result even though the body is
+empty. `addArticle`'s result can now carry the id; nothing yet uses it for "add an
+article and sync it immediately" — that workflow is still open, but the id it needs is
+no longer unreachable. Tests: `spec/api_spec.lua`.
 
 ### 4. The mixin-by-side-effect pattern
 
@@ -223,13 +395,16 @@ already covered by `spec/form_spec.lua`.
 
 ### 5. Smaller things
 
-- The reason carried into the *highlight* summary does not reach the full-sync
-  completion summary, which still folds `counts.error` and `counts.import_failed` into
-  a single `highlights_failed` number (`sync/articles.lua:371`).
-
-- `export.lua:321` POSTs the entire KOReader annotation table, internal bookkeeping
-  fields and all. Harmless — the server ignores unknown fields — but it means the
-  outgoing payload is whatever KOReader happens to put in a sidecar.
+- Fixed: the reason carried into the *highlight* summary now also reaches the
+  full-sync completion summary (was: `sync/articles.lua` folded `counts.error` and
+  `counts.import_failed` into a bare `highlights_failed` number). See above.
+- Checked and already fine: `export.lua`'s highlight create/update payload is not the
+  raw KOReader annotation table — `Highlights.build_payload`/`finish_payload` builds a
+  curated payload (`text`, `color`, `start_selector`, `start_offset`, `end_selector`,
+  `end_offset`, `note`) that matches `BookmarkAnnotation` in `../readeck`'s
+  `internal/bookmarks/annotations.go` field for field. The note in an earlier version of
+  this file describing a blind pass-through predates the highlight-position rework
+  above, which is what introduced this curated payload.
 - The mock still ignores every query filter (`is_archived`, `type`, `labels`, `sort`)
   and returns the whole store, so no test exercises filtering.
 - The mock answers errors in the JSON shape only. The real server picks its shape from

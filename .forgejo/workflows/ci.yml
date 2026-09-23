@@ -1,0 +1,101 @@
+# CI for the fork on my Forgejo (http://n:3000/tomas/readeck.koplugin).
+#
+# How this runner setup works, how to read logs and how to debug a red run:
+# .agents/skills/forgejo-ci/SKILL.md. The short version:
+# - `runs-on: pi-agent` is the only general-purpose runner label on the
+#   instance; the `container:` block swaps its image for stock Debian, so
+#   nothing here depends on the @ai agent's image.
+# - Jobs share the host's network namespace (network=host): the local Readeck
+#   and fixture servers the e2e suite starts on 127.0.0.1 use the host's port
+#   space, so they stay inside 18900-18999.
+# - There is no actions cache server, so each run downloads its tools (a few
+#   seconds on the LAN) and the pipeline stays stateless.
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  MISE_YES: "1"
+  # What the e2e job runs against. Bump deliberately.
+  KOREADER_VERSION: v2026.07.1
+  READECK_VERSIONS: "0.21.6 0.22.1 0.23.4"
+
+jobs:
+  check:
+    name: lint + unit tests
+    runs-on: pi-agent
+    container:
+      image: docker.io/library/debian:trixie-slim
+    timeout-minutes: 20
+    steps:
+      - name: System packages
+        run: |
+          apt-get update -qq
+          # nodejs: actions/checkout; libreadline-dev: mise builds Lua 5.1 from source.
+          apt-get install -y -qq --no-install-recommends \
+            ca-certificates curl git build-essential unzip nodejs libreadline-dev >/dev/null
+
+      - uses: actions/checkout@v4
+
+      - name: Tools (mise.toml is the single source of truth)
+        run: |
+          curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh
+          mise trust
+          mise install
+          mise run setup
+
+      - name: luacheck + stylua --check + busted
+        run: mise run check
+
+  e2e:
+    name: e2e
+    runs-on: pi-agent
+    container:
+      image: docker.io/library/debian:trixie-slim
+    timeout-minutes: 25
+    steps:
+      - name: System packages
+        run: |
+          apt-get update -qq
+          # The KOReader tarball bundles SDL and fonts; no display is needed.
+          apt-get install -y -qq --no-install-recommends \
+            ca-certificates curl git xz-utils python3 nodejs unzip >/dev/null
+
+      - uses: actions/checkout@v4
+
+      - name: KOReader release runtime
+        run: |
+          mkdir -p /opt/koreader
+          curl -fsSL "https://github.com/koreader/koreader/releases/download/${KOREADER_VERSION}/koreader-linux-x86_64-${KOREADER_VERSION}.tar.xz" \
+            | tar -xJ -C /opt/koreader
+          test -x /opt/koreader/lib/koreader/luajit
+
+      - name: e2e suite against local Readeck ${{ env.READECK_VERSIONS }}
+        env:
+          KOREADER_BUILD_DIR: /opt/koreader/lib/koreader
+          # Offset from the local default so a developer's suite on the runner
+          # host cannot collide with CI.
+          READECK_LOCAL_PORT: "18940"
+        run: e2e/run.sh
+
+      - name: Summarise failures
+        if: failure()
+        run: |
+          latest=references/e2e-artifacts/latest
+          grep -E '^(FAIL|XPASS|CRASH)' "$latest/results.tsv" || true
+          for log in "$latest"/*/*.log; do
+            if grep -q -E 'FAIL|XPASS|TIMEOUT|traceback' "$log"; then
+              echo "::group::$log"; tail -80 "$log"; echo "::endgroup::"
+            fi
+          done
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: e2e-artifacts
+          path: references/e2e-artifacts/latest/
+          retention-days: 14

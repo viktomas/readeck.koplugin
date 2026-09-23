@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Show Forgejo Actions runs and logs for this repo.
+#
+#   tools/ci-logs            list the latest runs (task id, job, status, branch)
+#   tools/ci-logs <task-id>  print the log of one task (job)
+#   tools/ci-logs last       print the log of the most recent task
+#   tools/ci-logs wait [sha] block until every task for sha (default HEAD) finished,
+#                            then print a summary; exit 1 if any failed
+#
+# Forgejo 15 has no API for job logs and the web log route wants a browser
+# session, so logs are read straight from the server's actions_log store over
+# `ssh n` (zstd-compressed, one file per task).
+set -euo pipefail
+
+REPO="${FORGEJO_REPO:-tomas/readeck.koplugin}"
+API="${FORGEJO_URL:-http://n:3000}/api/v1/repos/$REPO/actions/tasks"
+LOG_ROOT="backedup/forgejo/data/actions_log/$REPO"
+
+tasks() {
+    curl -fsS -H "Authorization: token $FORGEJO_TOKEN" "$API?limit=${1:-20}"
+}
+
+show_log() {
+    local id="$1" hex
+    hex=$(printf '%02x' $((id % 256)))
+    ssh n "zstd -dc ~/$LOG_ROOT/$hex/$id.log.zst" | cut -c 30-
+}
+
+case "${1:-}" in
+"")
+    tasks 20 | jq -r '.workflow_runs[] | [.id, .name, .status, .head_branch, .head_sha[0:8], .created_at] | @tsv' | column -t
+    ;;
+last)
+    show_log "$(tasks 1 | jq -r '.workflow_runs[0].id')"
+    ;;
+wait)
+    sha="${2:-$(git rev-parse HEAD)}"
+    while true; do
+        runs=$(tasks 50 | jq -c --arg sha "$sha" '[.workflow_runs[] | select(.head_sha == $sha)]')
+        total=$(jq length <<<"$runs")
+        pending=$(jq '[.[] | select(.status == "waiting" or .status == "running" or .status == "blocked")] | length' <<<"$runs")
+        if [ "$total" -gt 0 ] && [ "$pending" -eq 0 ]; then
+            jq -r '.[] | [.id, .name, .status] | @tsv' <<<"$runs" | column -t
+            jq -e 'all(.[]; .status == "success")' <<<"$runs" >/dev/null
+            exit $?
+        fi
+        sleep 10
+    done
+    ;;
+*)
+    show_log "$1"
+    ;;
+esac
