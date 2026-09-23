@@ -1,4 +1,5 @@
 local DocSettings = require("docsettings")
+local EpubSource = require("readeck.annotations.epub_source")
 local Errors = require("readeck.net.errors")
 local Event = require("ui/event")
 local FFIUtil = require("ffi/util")
@@ -46,6 +47,18 @@ end
 
 -- Exposed for tests: the merge rule for text reasons is easy to break silently.
 Export.add_highlight_counts = add_highlight_counts
+
+-- The full-sync summary used to fold every highlight-sync outcome into a bare
+-- `highlights_failed` count; this is the one reason worth keeping (export
+-- rejection beats import failure only because there is one slot to fill).
+local function highlight_failure_message(counts)
+    if type(counts) ~= "table" then
+        return nil
+    end
+    return counts.error_message or counts.import_error_message
+end
+
+Export.highlight_failure_message = highlight_failure_message
 
 function Export.install(Readeck, deps)
     local L = deps.L
@@ -100,17 +113,34 @@ function Export.install(Readeck, deps)
         return true
     end
 
-    function Readeck:localHighlightOverlapsRemote(local_highlight, remote_highlight, profile)
+    -- The translation between KOReader xpointers and Readeck selectors for the
+    -- downloaded EPUB at `path` (readeck/annotations/position_map.lua), or nil.
+    function Readeck:getPositionMap(path)
+        if not path then
+            return nil, "no_path"
+        end
+        local document = self.ui and self.ui.document
+        if not (document and document.file == path) then
+            document = nil
+        end
+        local map, reason = EpubSource.position_map(path, document)
+        if not map then
+            Log:info("No highlight position map for", path, reason)
+        end
+        return map, reason
+    end
+
+    function Readeck:localHighlightOverlapsRemote(local_highlight, remote_highlight, profile, position_map)
         if Highlights.local_matches_remote_id(local_highlight, remote_highlight) then
             return true
         end
-        local local_payload = Highlights.build_payload(local_highlight, profile)
-        return local_payload and Highlights.overlap(local_payload, remote_highlight) or false
+        local local_payload = Highlights.build_payload(local_highlight, profile, position_map)
+        return local_payload and Highlights.overlap(local_payload, remote_highlight, position_map) or false
     end
 
-    function Readeck:remoteHighlightExistsLocally(annotations, remote_highlight, profile)
+    function Readeck:remoteHighlightExistsLocally(annotations, remote_highlight, profile, position_map)
         for _, local_highlight in pairs(annotations or {}) do
-            if self:localHighlightOverlapsRemote(local_highlight, remote_highlight, profile) then
+            if self:localHighlightOverlapsRemote(local_highlight, remote_highlight, profile, position_map) then
                 return true
             end
         end
@@ -146,16 +176,42 @@ function Export.install(Readeck, deps)
         return Features.highlight_payload_profile(self.server_info or self:refreshServerInfo(true))
     end
 
-    function Readeck:addRemoteHighlightToAnnotations(path, annotations, remote_highlight, profile, options)
-        local local_annotation, reason = Highlights.remote_to_local_annotation(remote_highlight, profile)
+    -- With the book open, crengine has the last word: the positions must
+    -- resolve to text, and the highlight gets crengine's own rendering of it.
+    function Readeck:checkPositionsInDocument(local_annotation)
+        local document = self.ui.document
+        if type(document.getTextFromXPointers) ~= "function" then
+            return true
+        end
+        local ok, text = pcall(document.getTextFromXPointers, document, local_annotation.pos0, local_annotation.pos1)
+        if not ok or type(text) ~= "string" or text:match("^%s*$") then
+            return false
+        end
+        local_annotation.text = text
+        return true
+    end
+
+    function Readeck:addRemoteHighlightToAnnotations(
+        path,
+        annotations,
+        remote_highlight,
+        profile,
+        options,
+        position_map
+    )
+        local local_annotation, reason = Highlights.remote_to_local_annotation(remote_highlight, profile, position_map)
         if not local_annotation then
             return false, reason
         end
 
         local is_current_document = self.ui and self.ui.document and self.ui.document.file == path
         if is_current_document and self.ui.annotation and type(self.ui.annotation.addItem) == "function" then
+            if not self:checkPositionsInDocument(local_annotation) then
+                return false, "unresolved_position"
+            end
             if self.ui.toc and type(self.ui.toc.getTocTitleByPage) == "function" then
                 local_annotation.chapter = self.ui.toc:getTocTitleByPage(local_annotation.page)
+                    or local_annotation.chapter
             end
             local index = self.ui.annotation:addItem(local_annotation)
             annotations = self.ui.annotation.annotations or annotations
@@ -176,23 +232,89 @@ function Export.install(Readeck, deps)
         return true
     end
 
-    function Readeck:importRemoteHighlightsForPath(path, annotations, remote_highlights, profile, counts, options)
+    -- Earlier versions imported Readeck annotations with the Readeck selector
+    -- as the KOReader position ("section[1]/article[1]/p[4].4"), which
+    -- crengine cannot resolve, so they were never drawn. Re-derive the
+    -- positions of such linked highlights from the server's annotation.
+    function Readeck:repairImportedPositions(path, annotations, remote_highlights_by_id, position_map, counts)
+        if not position_map then
+            return false
+        end
+        local changed = false
+        local is_current_document = self.ui and self.ui.document and self.ui.document.file == path
+        for _, h in pairs(annotations or {}) do
+            local remote = h.readeck_annotation_id and remote_highlights_by_id[tostring(h.readeck_annotation_id)]
+            if remote and type(h.pos0) == "string" and h.pos0:sub(1, 1) ~= "/" then
+                local pos0, pos1, text = Highlights.remote_positions(remote, position_map)
+                if pos0 then
+                    local old0, old1, old_text = h.pos0, h.pos1, h.text
+                    h.pos0, h.pos1, h.page = pos0, pos1, pos0
+                    h.text = text ~= "" and text or h.text
+                    if is_current_document and not self:checkPositionsInDocument(h) then
+                        h.pos0, h.pos1, h.page, h.text = old0, old1, old0, old_text
+                    else
+                        changed = true
+                        counts.updated_local = counts.updated_local + 1
+                        Log:info("Repaired position of imported highlight", h.readeck_annotation_id)
+                    end
+                end
+            end
+        end
+        if changed and is_current_document and self.ui.annotation then
+            if type(self.ui.annotation.updateAnnotations) == "function" then
+                pcall(self.ui.annotation.updateAnnotations, self.ui.annotation, true, true)
+            end
+        end
+        return changed
+    end
+
+    function Readeck:describeImportFailure(reason)
+        if reason == "no_position_map" then
+            return L("the downloaded article could not be read")
+        end
+        if reason == "unresolved_position" or reason == "invalid_position" then
+            return L("its text is not in the downloaded article")
+        end
+        return nil
+    end
+
+    function Readeck:importRemoteHighlightsForPath(
+        path,
+        annotations,
+        remote_highlights,
+        profile,
+        counts,
+        options,
+        position_map
+    )
         if not path then
             return counts
         end
         annotations = annotations or {}
         counts = counts or new_highlight_counts()
+        if position_map == nil then
+            position_map = self:getPositionMap(path)
+        end
 
         for _, remote_highlight in ipairs(remote_highlights or {}) do
-            if self:remoteHighlightExistsLocally(annotations, remote_highlight, profile) then
+            if self:remoteHighlightExistsLocally(annotations, remote_highlight, profile, position_map) then
                 counts.import_skipped = counts.import_skipped + 1
             else
-                local ok, reason =
-                    self:addRemoteHighlightToAnnotations(path, annotations, remote_highlight, profile, options)
+                local ok, reason = self:addRemoteHighlightToAnnotations(
+                    path,
+                    annotations,
+                    remote_highlight,
+                    profile,
+                    options,
+                    position_map
+                )
                 if ok then
                     counts.imported = counts.imported + 1
                 else
                     counts.import_failed = counts.import_failed + 1
+                    if not counts.import_error_message then
+                        counts.import_error_message = self:describeImportFailure(reason)
+                    end
                     Log:info("Skipping remote highlight import:", reason)
                 end
             end
@@ -224,7 +346,14 @@ function Export.install(Readeck, deps)
             table.insert(message_parts, T(L("Skipped (unsupported): %1"), counts.invalid))
         end
         if (counts.import_failed or 0) > 0 then
-            table.insert(message_parts, T(L("Import failed: %1"), counts.import_failed))
+            if counts.import_error_message then
+                table.insert(
+                    message_parts,
+                    T(L("Import failed: %1 (%2)"), counts.import_failed, counts.import_error_message)
+                )
+            else
+                table.insert(message_parts, T(L("Import failed: %1"), counts.import_failed))
+            end
         end
         if (counts.remote_deleted or 0) > 0 then
             table.insert(message_parts, T(L("Kept local only: %1"), counts.remote_deleted))
@@ -271,6 +400,14 @@ function Export.install(Readeck, deps)
             if err.kind == Errors.KIND.AUTH_PENDING then
                 return false, add_highlight_counts(new_highlight_counts(), { error = 1 })
             end
+            if Errors.is_not_found(err) then
+                -- The bookmark itself is gone: there is nothing left to sync
+                -- and nothing to protect, so this counts as done rather than
+                -- failed. Callers that guard a completion action on this
+                -- (removeArticle) rely on `bookmark_missing` to stop retrying.
+                Log:info("Bookmark gone from server, nothing to sync:", article_id)
+                return true, add_highlight_counts(new_highlight_counts(), { bookmark_missing = 1 })
+            end
             if not options.quiet then
                 UIManager:show(InfoMessage:new({
                     text = L("Could not fetch existing highlights from Readeck. Aborting highlight sync."),
@@ -284,12 +421,22 @@ function Export.install(Readeck, deps)
 
         local highlight_profile = self:getHighlightPayloadProfile()
         local counts = new_highlight_counts()
-        self:importRemoteHighlightsForPath(path, annotations, existing_highlights, highlight_profile, counts, options)
+        local position_map = path and self:getPositionMap(path) or nil
         local remote_highlights_by_id = self:indexRemoteHighlightsByID(existing_highlights)
-        local local_annotations_changed = false
+        local local_annotations_changed =
+            self:repairImportedPositions(path, annotations, remote_highlights_by_id, position_map, counts)
+        self:importRemoteHighlightsForPath(
+            path,
+            annotations,
+            existing_highlights,
+            highlight_profile,
+            counts,
+            options,
+            position_map or false
+        )
 
         for _, h in pairs(annotations) do
-            local local_highlight, skip_reason = Highlights.build_payload(h, highlight_profile)
+            local local_highlight, skip_reason = Highlights.build_payload(h, highlight_profile, position_map)
 
             if local_highlight then
                 if self:shouldKeepRemoteDeletedHighlightLocal(h, remote_highlights_by_id) then
@@ -303,7 +450,7 @@ function Export.install(Readeck, deps)
                             is_overlapping = true
                             linked_remote_highlight = remote_h
                             break
-                        elseif Highlights.overlap(local_highlight, remote_h) then
+                        elseif Highlights.overlap(local_highlight, remote_h, position_map) then
                             is_overlapping = true
                             break
                         end

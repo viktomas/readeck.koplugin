@@ -58,3 +58,24 @@ describe("highlight count merging", function()
         assert.are.equal("first reason", merged.error_message)
     end)
 end)
+
+describe("Export.highlight_failure_message", function()
+    install_koreader_stubs()
+    local Export = require("readeck.annotations.export")
+
+    it("prefers the export error reason", function()
+        assert.are.equal(
+            "boom",
+            Export.highlight_failure_message({ error = 1, error_message = "boom", import_error_message = "other" })
+        )
+    end)
+
+    it("falls back to the import error reason", function()
+        assert.are.equal("boom", Export.highlight_failure_message({ import_failed = 1, import_error_message = "boom" }))
+    end)
+
+    it("returns nil when there is no reason, or no counts at all", function()
+        assert.is_nil(Export.highlight_failure_message({ error = 1 }))
+        assert.is_nil(Export.highlight_failure_message(nil))
+    end)
+end)

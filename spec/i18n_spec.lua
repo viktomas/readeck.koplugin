@@ -111,15 +111,21 @@ describe("readeck.i18n", function()
             "合并本地和远端变更",
             I18n.translate("Merge local and remote changes", nil, settings("zh_CN"))
         )
-        assert.are.equal(
-            "新版 Readeck（0.22.2+）",
-            I18n.translate("Modern Readeck (0.22.2+)", nil, settings("zh_CN"))
-        )
+        assert.are.equal("新版 Readeck（0.22+）", I18n.translate("Modern Readeck (0.22+)", nil, settings("zh_CN")))
         assert.are.equal(
             "仅保留在本地的高亮：%1",
             I18n.translate("Highlights kept local only: %1", nil, settings("zh_CN"))
         )
         assert.are.equal("简体中文", I18n.translate("Simplified Chinese", nil, settings("zh_CN")))
         assert.are.equal("星级阈值", I18n.translate("Star rating threshold", nil, settings("zh_CN")))
+        assert.are.equal("导入失败：%1（%2）", I18n.translate("Import failed: %1 (%2)", nil, settings("zh_CN")))
+        assert.are.equal(
+            "无法读取已下载的文章",
+            I18n.translate("the downloaded article could not be read", nil, settings("zh_CN"))
+        )
+        assert.are.equal(
+            "已下载的文章中找不到其文本",
+            I18n.translate("its text is not in the downloaded article", nil, settings("zh_CN"))
+        )
     end)
 end)

@@ -65,8 +65,44 @@ function Api:list_bookmarks(params)
     return self:request("GET", Api.bookmarks_query(params))
 end
 
+function Api:get_bookmark(id)
+    return self:request("GET", Api.paths.bookmark(id))
+end
+
+-- Bookmark creation answers 202 with an empty body; the new id is only in a
+-- `Bookmark-Id` or `Location` response header (measured against a real
+-- server, work.md "Testing against reality"). Without this, the id created
+-- by create_bookmark was unreachable by its callers.
+local function bookmark_id_from_headers(headers)
+    if type(headers) ~= "table" then
+        return nil
+    end
+    local id = headers["bookmark-id"]
+    if type(id) == "string" and id ~= "" then
+        return id
+    end
+    local location = headers["location"]
+    if type(location) == "string" then
+        return location:match("/api/bookmarks/([^/]+)/?$")
+    end
+    return nil
+end
+
+-- Exposed for tests: pure header parsing, easy to break silently.
+Api.bookmark_id_from_headers = bookmark_id_from_headers
+
 function Api:create_bookmark(body)
-    return self:request("POST", Api.paths.bookmarks, body)
+    local result, err, headers = self:request("POST", Api.paths.bookmarks, body)
+    if result and err == nil then
+        local id = (type(result) == "table" and result.id) or bookmark_id_from_headers(headers)
+        if id then
+            if type(result) ~= "table" then
+                result = {}
+            end
+            result.id = result.id or id
+        end
+    end
+    return result, err
 end
 
 function Api:update_bookmark(id, body)

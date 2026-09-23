@@ -34,6 +34,24 @@ describe("readeck.net.errors", function()
         assert.are.equal("element not found", err.message)
     end)
 
+    describe("is_not_found", function()
+        it("is true for a 404 or 410 HTTP error", function()
+            assert.is_true(Errors.is_not_found(Errors.new(Errors.KIND.HTTP_ERROR, 404)))
+            assert.is_true(Errors.is_not_found(Errors.new(Errors.KIND.HTTP_ERROR, 410)))
+        end)
+
+        it("is false for any other HTTP status", function()
+            assert.is_false(Errors.is_not_found(Errors.new(Errors.KIND.HTTP_ERROR, 500)))
+            assert.is_false(Errors.is_not_found(Errors.new(Errors.KIND.HTTP_ERROR, 401)))
+        end)
+
+        it("is false for non-HTTP errors, nil, and non-table values", function()
+            assert.is_false(Errors.is_not_found(Errors.new(Errors.KIND.NETWORK_ERROR)))
+            assert.is_false(Errors.is_not_found(nil))
+            assert.is_false(Errors.is_not_found(true))
+        end)
+    end)
+
     -- The three bodies below are verbatim from a real Readeck 0.23.4 server.
     describe("message_from_body", function()
         local decode = require("dkjson").decode

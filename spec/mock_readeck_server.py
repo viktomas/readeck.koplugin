@@ -229,12 +229,15 @@ def version_at_least(target):
     return parse_version(CONFIG["version"]) >= parse_version(target)
 
 
+# Notes arrived in Readeck 0.22.0 (measured against release binaries by the
+# e2e suite; 0.21.6 silently drops a note). Note the real pre-0.22 server
+# ignores the field instead of rejecting it as this mock does.
 def annotation_notes_supported():
-    return "annotation_notes" in CONFIG["features"] or version_at_least("0.22.2")
+    return "annotation_notes" in CONFIG["features"] or version_at_least("0.22.0")
 
 
 def annotation_none_color_supported():
-    return "annotation_none_color" in CONFIG["features"] or version_at_least("0.22.2")
+    return "annotation_none_color" in CONFIG["features"] or version_at_least("0.22.0")
 
 
 def write_json(handler, payload, status=200, extra_headers=None):
@@ -326,11 +329,11 @@ def validate_annotation(payload):
     if len(color) > 32:
         return form_error("color", "max length is 32")
     if color == "none" and not annotation_none_color_supported():
-        return form_error("color", "unsupported before Readeck 0.22.2")
+        return form_error("color", "unsupported before Readeck 0.22.0")
 
     if "note" in payload:
         if not annotation_notes_supported():
-            return form_error("note", "unsupported before Readeck 0.22.2")
+            return form_error("note", "unsupported before Readeck 0.22.0")
         if len(str(payload["note"])) > 1024:
             return form_error("note", "max length is 1024")
 
@@ -345,11 +348,11 @@ def validate_annotation_update(payload):
     if len(color) > 32:
         return form_error("color", "max length is 32")
     if color == "none" and not annotation_none_color_supported():
-        return form_error("color", "unsupported before Readeck 0.22.2")
+        return form_error("color", "unsupported before Readeck 0.22.0")
 
     if "note" in payload:
         if not annotation_notes_supported():
-            return form_error("note", "unsupported before Readeck 0.22.2")
+            return form_error("note", "unsupported before Readeck 0.22.0")
         if len(str(payload["note"])) > 1024:
             return form_error("note", "max length is 1024")
 

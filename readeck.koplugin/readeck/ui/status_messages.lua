@@ -91,7 +91,14 @@ function StatusMessages.install(Readeck, deps)
             table.insert(parts, T(L("Highlights skipped: %1"), counts.highlights_skipped))
         end
         if (counts.highlights_failed or 0) > 0 then
-            table.insert(parts, T(L("Highlight sync failed: %1"), counts.highlights_failed))
+            if counts.highlights_failed_message then
+                table.insert(
+                    parts,
+                    T(L("Highlight sync failed: %1 (%2)"), counts.highlights_failed, counts.highlights_failed_message)
+                )
+            else
+                table.insert(parts, T(L("Highlight sync failed: %1"), counts.highlights_failed))
+            end
         end
         if (counts.local_removed or 0) > 0 then
             table.insert(parts, T(L("Removed from KOReader: %1"), counts.local_removed))

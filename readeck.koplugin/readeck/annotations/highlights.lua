@@ -1,3 +1,5 @@
+local Dates = require("readeck.core.dates")
+
 local Highlights = {}
 
 local READECK_HIGHLIGHT_COLORS = {
@@ -80,14 +82,31 @@ function Highlights.text_length(text)
     return count
 end
 
+-- KOReader xpointers into a Readeck EPUB are absolute: the article HTML that
+-- Readeck resolves selectors against sits inside <main> of the EPUB page.
+-- Current crengine writes every step with an explicit index
+-- (/body[1]/DocFragment[1]/body[1]/main[1]/section[1]/...); older builds wrote
+-- the bare form (/body/DocFragment/body/main/section/...). Both must reduce to
+-- the article-relative path, or Readeck answers 'element "/body[1]/..." not
+-- found' for every highlight - found by the e2e suite with a real KOReader.
+local KOREADER_PREFIX = "^/body%[?%d*%]?/DocFragment%[?%d*%]?/body%[?%d*%]?/main%[?%d*%]?/"
+
 function Highlights.clean_selector(selector)
     if not selector then
         return ""
     end
-    return tostring(selector)
-        :gsub("/body/DocFragment/body/main/", "")
-        :gsub("/text%(%)%[%d+%]$", "")
-        :gsub("/text%(%)$", "")
+    return (
+        tostring(selector)
+            :gsub(KOREADER_PREFIX, "")
+            :gsub("/body/DocFragment/body/main/", "")
+            :gsub("/text%(%)%[%d+%]$", "")
+            :gsub("/text%(%)$", "")
+    )
+end
+
+function Highlights.is_later_text_node(selector)
+    local index = tostring(selector or ""):match("/text%(%)%[(%d+)%]$")
+    return index ~= nil and tonumber(index) > 1
 end
 
 function Highlights.normalize_selector(selector)
@@ -130,12 +149,34 @@ function Highlights.compare_points(s1, o1, s2, o2)
     return 0
 end
 
-function Highlights.overlap(h1, h2)
+-- Both annotations as [start, end) ranges of the article's Readeck text, when
+-- the EPUB's PositionMap can resolve them: exact, whatever element each
+-- selector names (p[2] vs p[2]/em[1]).
+local function mapped_range(h, position_map)
+    local g0 = position_map:readeck_to_global(h.start_selector, h.start_offset)
+    local g1 = position_map:readeck_to_global(h.end_selector, h.end_offset)
+    if not (g0 and g1) then
+        return nil
+    end
+    if g0 > g1 then
+        g0, g1 = g1, g0
+    end
+    return g0, g1
+end
+
+function Highlights.overlap(h1, h2, position_map)
     if not (h1 and h1.start_selector and h1.end_selector and h1.start_offset and h1.end_offset) then
         return false
     end
     if not (h2 and h2.start_selector and h2.end_selector and h2.start_offset and h2.end_offset) then
         return false
+    end
+    if position_map then
+        local a0, a1 = mapped_range(h1, position_map)
+        local b0, b1 = mapped_range(h2, position_map)
+        if a0 and b0 then
+            return a0 < b1 and b0 < a1
+        end
     end
 
     local h2_start_s, h2_start_o, h2_end_s, h2_end_o
@@ -351,56 +392,80 @@ function Highlights.plan_linked_sync(local_highlight, remote_highlight, profile,
     }
 end
 
-function Highlights.remote_to_local_annotation(remote_highlight, profile)
+-- Readeck's `created` is UTC ("2026-05-06T17:47:45.123Z"); KOReader's
+-- `datetime` is local wall-clock time, as os.date writes it.
+function Highlights.local_datetime(value)
+    local timestamp = Dates.parse(value)
+    if not timestamp then
+        return nil
+    end
+    return os.date("%Y-%m-%d %H:%M:%S", timestamp)
+end
+
+local function collapse_whitespace(text)
+    return (tostring(text or ""):gsub("[ \t\r\n]+", " "):gsub("^ ", ""):gsub(" $", ""))
+end
+
+-- Readeck (selectors, offsets) -> crengine xpointers of the downloaded EPUB,
+-- through its PositionMap. Returns pos0, pos1, text or nil and a reason.
+function Highlights.remote_positions(remote_highlight, position_map)
+    if not position_map then
+        return nil, "no_position_map"
+    end
+    local start_offset = tonumber(remote_highlight.start_offset)
+    local end_offset = tonumber(remote_highlight.end_offset)
+    if type(remote_highlight.start_selector) ~= "string" or type(remote_highlight.end_selector) ~= "string" then
+        return nil, "invalid_position"
+    end
+    if start_offset == nil or end_offset == nil then
+        return nil, "invalid_position"
+    end
+    local g0 = position_map:readeck_to_global(remote_highlight.start_selector, start_offset)
+    local g1 = position_map:readeck_to_global(remote_highlight.end_selector, end_offset)
+    if not (g0 and g1) then
+        return nil, "unresolved_position"
+    end
+    local start_selector, end_selector = remote_highlight.start_selector, remote_highlight.end_selector
+    if g0 > g1 then
+        start_selector, end_selector = end_selector, start_selector
+        start_offset, end_offset = end_offset, start_offset
+        g0, g1 = g1, g0
+    end
+    local pos0 = position_map:to_xpointer(start_selector, start_offset, false)
+    local pos1 = position_map:to_xpointer(end_selector, end_offset, true)
+    if not (pos0 and pos1) or g0 == g1 then
+        return nil, "unresolved_position"
+    end
+    return pos0, pos1, collapse_whitespace(position_map:readeck_text(g0, g1))
+end
+
+function Highlights.remote_to_local_annotation(remote_highlight, profile, position_map)
     if type(remote_highlight) ~= "table" then
         return nil, "invalid_annotation"
     end
 
-    local start_selector = Highlights.clean_selector(remote_highlight.start_selector)
-    local end_selector = Highlights.clean_selector(remote_highlight.end_selector)
-    local start_offset = tonumber(remote_highlight.start_offset)
-    local end_offset = tonumber(remote_highlight.end_offset)
-    if start_selector == "" or end_selector == "" or start_offset == nil or end_offset == nil then
-        return nil, "invalid_position"
+    local pos0, pos1, text = Highlights.remote_positions(remote_highlight, position_map)
+    if not pos0 then
+        return nil, pos1
+    end
+    if text == "" and type(remote_highlight.text) == "string" then
+        text = collapse_whitespace(remote_highlight.text)
     end
 
-    if Highlights.compare_points(start_selector, start_offset, end_selector, end_offset) > 0 then
-        start_selector, end_selector = end_selector, start_selector
-        start_offset, end_offset = end_offset, start_offset
-    end
-
-    if
-        not Highlights.is_safe_boundary_selector(start_selector)
-        or not Highlights.is_safe_boundary_selector(end_selector)
-    then
-        return nil, "unsupported_selector"
-    end
-
-    local text = type(remote_highlight.text) == "string" and remote_highlight.text or ""
     local note = type(remote_highlight.note) == "string" and remote_highlight.note or nil
     if note == "" then
         note = nil
     end
-
-    local datetime = remote_highlight.created or remote_highlight.updated
-    if type(datetime) == "string" then
-        datetime = datetime:gsub("T", " "):gsub("Z$", ""):gsub("%.%d+", "")
-    else
-        datetime = nil
-    end
-
-    local color = Highlights.remote_color_to_local(remote_highlight.color)
-    local pos0 = start_selector .. "." .. tostring(start_offset)
-    local pos1 = end_selector .. "." .. tostring(end_offset)
 
     local local_annotation = {
         page = pos0,
         pos0 = pos0,
         pos1 = pos1,
         text = text,
-        datetime = datetime,
+        chapter = position_map.title,
+        datetime = Highlights.local_datetime(remote_highlight.created or remote_highlight.updated),
         drawer = "lighten",
-        color = color,
+        color = Highlights.remote_color_to_local(remote_highlight.color),
         note = note,
         readeck_annotation_id = remote_highlight.id,
     }
@@ -410,16 +475,73 @@ function Highlights.remote_to_local_annotation(remote_highlight, profile)
     return local_annotation
 end
 
-function Highlights.build_payload(h, profile)
+local function finish_payload(h, profile, start_selector, start_offset, end_selector, end_offset)
+    local payload = {
+        text = h.text,
+        color = Highlights.local_color(h, profile),
+        start_selector = start_selector,
+        start_offset = start_offset,
+        end_selector = end_selector,
+        end_offset = end_offset,
+    }
+    if profile.notes then
+        payload.note = Highlights.normalize_note(h.note)
+    end
+    return payload
+end
+
+-- KOReader xpointers -> Readeck selectors and offsets, through the EPUB's
+-- PositionMap: text-node offsets become element offsets, crengine's collapsed
+-- whitespace becomes raw characters, Readeck's own <mark>/noteref markup in
+-- the EPUB is accounted for.
+local function build_mapped_payload(h, profile, position_map)
+    local g0 = position_map:xpointer_to_global(h.pos0, false)
+    local g1 = position_map:xpointer_to_global(h.pos1, true)
+    if not (g0 and g1) then
+        return nil, "unsupported_selector"
+    end
+    local pos0, pos1 = h.pos0, h.pos1
+    if g0 > g1 then
+        pos0, pos1 = pos1, pos0
+    end
+    local start_selector, start_offset = position_map:to_readeck(pos0, false)
+    local end_selector, end_offset = position_map:to_readeck(pos1, true)
+    if not (start_selector and end_selector) then
+        return nil, "unsupported_selector"
+    end
+    local s = position_map:readeck_to_global(start_selector, start_offset)
+    local e = position_map:readeck_to_global(end_selector, end_offset)
+    if not (s and e) or s >= e then
+        return nil, "unsupported_selector"
+    end
+    return finish_payload(h, profile, start_selector, start_offset, end_selector, end_offset)
+end
+
+function Highlights.build_payload(h, profile, position_map)
     profile = profile or {}
     if type(h) ~= "table" or not h.drawer or type(h.pos0) ~= "string" or type(h.pos1) ~= "string" then
         return nil, "invalid_annotation"
     end
+    if position_map then
+        return build_mapped_payload(h, profile, position_map)
+    end
 
+    -- Fallback when the EPUB cannot be read (no PositionMap): a textual
+    -- rewrite that is only right for the first text node of an element
+    -- without collapsed whitespace or Readeck markup in the EPUB.
     local start_selector, start_offset = h.pos0:match("(.*)%.(%d+)")
     local end_selector, end_offset = h.pos1:match("(.*)%.(%d+)")
     if not (start_selector and start_offset and end_selector and end_offset) then
         return nil, "invalid_position"
+    end
+
+    -- KOReader offsets count from the start of one *text node*; Readeck's
+    -- count from the start of the *element*. They only agree for the first
+    -- text node. For text()[2] and later (text after an <em>, <a>, ...) the
+    -- offset would silently point at other words on the server, so refuse to
+    -- export rather than store a wrong highlight (found by the e2e suite).
+    if Highlights.is_later_text_node(start_selector) or Highlights.is_later_text_node(end_selector) then
+        return nil, "unsupported_selector"
     end
 
     local s_offset = tonumber(start_offset)
@@ -455,23 +577,7 @@ function Highlights.build_payload(h, profile)
         end
     end
 
-    local note = Highlights.normalize_note(h.note)
-    local color = Highlights.local_color(h, profile)
-
-    local payload = {
-        text = h.text,
-        color = color,
-        start_selector = start_selector,
-        start_offset = s_offset,
-        end_selector = end_selector,
-        end_offset = e_offset,
-    }
-
-    if profile.notes then
-        payload.note = note
-    end
-
-    return payload
+    return finish_payload(h, profile, start_selector, s_offset, end_selector, e_offset)
 end
 
 function Highlights.build_update_payload(h, profile, values)

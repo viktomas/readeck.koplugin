@@ -75,4 +75,26 @@ describe("readeck.ui.status_messages", function()
         assert.is_nil(readeck:formatAPIErrorMessage(nil))
         assert.is_nil(readeck:formatAPIErrorMessage({ kind = "something_else" }))
     end)
+
+    describe("highlights_failed in the full-sync summary", function()
+        -- Before this, the per-article highlight failure reason
+        -- (highlights.error_message / import_error_message) never reached the
+        -- full-sync completion summary, which only ever showed a bare count.
+        it("shows the reason next to the failure count when one is known", function()
+            local readeck = new_readeck()
+            local parts = {}
+            readeck:appendCompletionResultParts(
+                parts,
+                { highlights_failed = 1, highlights_failed_message = 'element "section/p[1]" not found' }
+            )
+            assert.are.same({ 'Highlight sync failed: 1 (element "section/p[1]" not found)' }, parts)
+        end)
+
+        it("falls back to the bare count when no reason is known", function()
+            local readeck = new_readeck()
+            local parts = {}
+            readeck:appendCompletionResultParts(parts, { highlights_failed = 2 })
+            assert.are.same({ "Highlight sync failed: 2" }, parts)
+        end)
+    end)
 end)

@@ -134,10 +134,10 @@ function Selectors.install(Readeck, deps)
     function Readeck:getHighlightFeaturePolicyLabel()
         local policy = self.highlight_feature_policy or "auto"
         if policy == "modern" then
-            return L("Modern Readeck (0.22.2+)")
+            return L("Modern Readeck (0.22+)")
         end
         if policy == "legacy" then
-            return L("Legacy Readeck (before 0.22.2)")
+            return L("Legacy Readeck (before 0.22)")
         end
         return L("Auto-detect from server")
     end
@@ -151,12 +151,12 @@ function Selectors.install(Readeck, deps)
             },
             {
                 "modern",
-                L("Modern Readeck (0.22.2+)"),
+                L("Modern Readeck (0.22+)"),
                 L("Always sync highlight notes and transparent color."),
             },
             {
                 "legacy",
-                L("Legacy Readeck (before 0.22.2)"),
+                L("Legacy Readeck (before 0.22)"),
                 L("Do not send highlight notes or transparent color."),
             },
         }

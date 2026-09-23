@@ -135,7 +135,7 @@ During sync, the plugin can send KOReader's local reading progress below 100% ba
 ### Readeck Server / Authentication
 
 * **Configure Readeck server > Server URL**: Set the base Readeck URL without `/api`
-* **Configure Readeck server > Readeck server features**: Auto-detect `/api/info`, force modern Readeck 0.22.2+ annotation fields, or force legacy compatibility
+* **Configure Readeck server > Readeck server features**: Auto-detect `/api/info`, force modern Readeck 0.22+ annotation fields, or force legacy compatibility
 * **Authentication > Authorize with OAuth**: Use device-flow OAuth login (with optional QR code)
 * **Authentication > Reset access token**: Clear token so the plugin re-authenticates
 * **Authentication > Clear all cached tokens**: Remove cached OAuth/token data

@@ -512,6 +512,10 @@ describe("KOReader smoke", function()
         end
 
         local Readeck = dofile("readeck.koplugin/main.lua")
+        local PositionMap = require("readeck.annotations.position_map")
+        local file = assert(io.open("spec/fixtures/readeck_epub/inline.html", "rb"))
+        local position_map = assert(PositionMap.new(file:read("*a")))
+        file:close()
         local instance = setmetatable({
             access_token = "token",
             server_info = { version = { canonical = "0.22.2" } },
@@ -521,19 +525,22 @@ describe("KOReader smoke", function()
             getArticleID = function()
                 return "abc123"
             end,
+            getPositionMap = function()
+                return position_map
+            end,
             callAPI = function(_, opts)
                 local method, path = opts.method, opts.path
                 if method == "GET" and path == "/api/bookmarks/abc123/annotations" then
                     return {
                         {
                             id = "remote-1",
-                            text = "remote text",
+                            text = "paragraph has",
                             note = "remote note",
                             color = "green",
-                            start_selector = "section/p[2]",
-                            start_offset = 4,
-                            end_selector = "section/p[2]",
-                            end_offset = 15,
+                            start_selector = "section[1]/article[1]/p[2]",
+                            start_offset = 5,
+                            end_selector = "section[1]/article[1]/p[2]",
+                            end_offset = 18,
                             created = "2026-05-06T17:47:45Z",
                         },
                     }
@@ -552,8 +559,28 @@ describe("KOReader smoke", function()
         assert.are.equal(0, counts.success)
         assert.are.equal(0, post_count)
         assert.are.equal("remote-1", saved_annotations[1].readeck_annotation_id)
-        assert.are.equal("section/p[2].4", saved_annotations[1].pos0)
+        assert.are.equal(
+            "/body/DocFragment[1]/body[1]/main[1]/section[1]/article[1]/p[2]/text()[1].5",
+            saved_annotations[1].pos0
+        )
+        assert.are.equal(
+            "/body/DocFragment[1]/body[1]/main[1]/section[1]/article[1]/p[2]/text()[1].18",
+            saved_annotations[1].pos1
+        )
+        assert.are.equal("paragraph has", saved_annotations[1].text)
         assert.are.equal("remote note", saved_annotations[1].note)
+
+        -- Without a readable EPUB the annotation is not imported with a
+        -- position crengine cannot resolve, and the reason is reported.
+        saved_annotations = nil
+        instance.getPositionMap = function()
+            return nil
+        end
+        ok, counts = instance:syncHighlightsForPath(article_path, { quiet = true })
+        assert.is_false(ok)
+        assert.are.equal(1, counts.import_failed)
+        assert.are.equal("the downloaded article could not be read", counts.import_error_message)
+        assert.is_nil(saved_annotations)
     end)
 
     it("keeps remote-deleted linked highlights local-only when configured", function()

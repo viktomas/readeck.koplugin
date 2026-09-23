@@ -6,10 +6,11 @@ local InfoMessage = require("ui/widget/infomessage")
 local Math = require("optmath")
 local NetworkMgr = require("ui/network/manager")
 local Progress = require("readeck.sync.progress")
+local RemotePresence = require("readeck.sync.remote_presence")
+local Tags = require("readeck.core.tags")
 local Status = require("readeck.sync.status")
 local UIManager = require("ui/uimanager")
 local lfs = require("libs/libkoreader-lfs")
-local util = require("util")
 
 local LocalActions = {}
 
@@ -26,7 +27,7 @@ function LocalActions.install(Readeck, deps)
         end
         Log:debug("Articles IDs from server:", remote_article_ids)
 
-        local candidates = self:collectRemoteDeleteCandidates(remote_article_ids)
+        local candidates = self:confirmRemoteDeleteCandidates(self:collectRemoteDeleteCandidates(remote_article_ids))
         if #candidates == 0 then
             return counts
         end
@@ -45,6 +46,28 @@ function LocalActions.install(Readeck, deps)
             counts.local_removed = counts.local_removed + self:deleteLocalArticle(entry_path)
         end
         return counts
+    end
+
+    -- Absent from the fetched list is not the same as gone from Readeck (see
+    -- readeck.sync.remote_presence): ask the server about each candidate and
+    -- keep only the ones it confirms are gone.
+    function Readeck:confirmRemoteDeleteCandidates(candidates)
+        local confirmed = {}
+        for _, entry_path in ipairs(candidates) do
+            local id = self:getArticleID(entry_path)
+            local bookmark, err = self:getApi():get_bookmark(id)
+            if RemotePresence.should_remove_local(bookmark, err) then
+                table.insert(confirmed, entry_path)
+            else
+                Log:info(
+                    "Keeping local file, bookmark not confirmed gone from Readeck:",
+                    id,
+                    err and err.kind or "exists",
+                    err and err.code or ""
+                )
+            end
+        end
+        return confirmed
     end
 
     function Readeck:collectRemoteDeleteCandidates(remote_article_ids)
@@ -257,12 +280,9 @@ function LocalActions.install(Readeck, deps)
             url = article_url,
         }
 
-        if self.auto_tags and self.auto_tags ~= "" then
-            local tags = {}
-            for tag in util.gsplit(self.auto_tags, "[,]+", false) do
-                table.insert(tags, tag:gsub("^%s*(.-)%s*$", "%1"))
-            end
-            body.labels = tags
+        local auto_tags = Tags.split(self.auto_tags)
+        if #auto_tags > 0 then
+            body.labels = auto_tags
         end
 
         local result, err = self:getApi():create_bookmark(body)
@@ -282,13 +302,8 @@ function LocalActions.install(Readeck, deps)
             if tags_text and tags_text ~= "" then
                 Log:debug("Sending tags", tags_text, "for", path)
 
-                local tags = {}
-                for tag in util.gsplit(tags_text, "[,]+", false) do
-                    table.insert(tags, tag:gsub("^%s*(.-)%s*$", "%1"))
-                end
-
                 local body = {
-                    add_labels = tags,
+                    add_labels = Tags.split(tags_text),
                 }
 
                 local _, err = self:getApi():update_bookmark(id, body)
@@ -306,7 +321,21 @@ function LocalActions.install(Readeck, deps)
         local counts = Status.new_counts()
         local id = self:getArticleID(path)
         if id then
-            local highlights_ok = self:syncHighlightsForPath(path, { quiet = true })
+            local highlights_ok, highlight_counts = self:syncHighlightsForPath(path, { quiet = true })
+            if highlight_counts and (highlight_counts.bookmark_missing or 0) > 0 then
+                -- The bookmark is already gone from Readeck (404 while fetching
+                -- its highlights): the completion action's goal - "this
+                -- bookmark is archived/deleted" - is already met, there are no
+                -- highlights left to protect, and retrying every sync would
+                -- only fail the same way forever. Finish locally and move on.
+                Log:info("Bookmark already gone from server, finishing completion action locally:", path)
+                counts.remote_deleted = counts.remote_deleted + 1
+                counts.processed_article_ids = {
+                    [tostring(id)] = true,
+                }
+                counts.local_removed = counts.local_removed + self:deleteLocalArticle(path)
+                return counts
+            end
             if highlights_ok == false then
                 Log:warn("Skipping completion action because highlight sync failed:", path)
                 counts.failed = counts.failed + 1
@@ -314,6 +343,7 @@ function LocalActions.install(Readeck, deps)
             end
 
             local remote_ok
+            local bookmark_gone = false
             if self.archive_instead_of_delete then
                 local body = {
                     is_archived = true,
@@ -338,6 +368,8 @@ function LocalActions.install(Readeck, deps)
                 remote_ok, err = self:getApi():update_bookmark(id, body)
                 if remote_ok then
                     counts.remote_archived = counts.remote_archived + 1
+                elseif Errors.is_not_found(err) then
+                    bookmark_gone = true
                 else
                     self:showAPIError(err)
                 end
@@ -346,9 +378,19 @@ function LocalActions.install(Readeck, deps)
                 remote_ok, err = self:getApi():delete_bookmark(id)
                 if remote_ok then
                     counts.remote_deleted = counts.remote_deleted + 1
+                elseif Errors.is_not_found(err) then
+                    bookmark_gone = true
                 else
                     self:showAPIError(err)
                 end
+            end
+            if bookmark_gone then
+                -- The bookmark was deleted on the server between the highlight
+                -- guard above and this request (a race, not a failure): same
+                -- goal-already-met outcome as the bookmark_missing case.
+                Log:info("Bookmark gone from server while completing action, finishing locally:", path)
+                counts.remote_deleted = counts.remote_deleted + 1
+                remote_ok = true
             end
             if remote_ok then
                 counts.processed_article_ids = {

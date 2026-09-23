@@ -143,6 +143,20 @@ describe("Readeck:callAPI 401/403 refresh-and-retry", function()
         assert.are.equal(2, #http_calls)
         assert.are.equal(1, get_bearer_calls)
         assert.is_nil(result)
+        -- A 401 that survives a fresh token is a credentials problem (e.g. a
+        -- wrong API token, which "refreshes" to itself), so it must surface as
+        -- AUTH_ERROR for the user to see "Authentication failed" - found by
+        -- the e2e suite against a real server.
+        assert.are.equal("auth_error", err.kind)
+        assert.are.equal(401, err.code)
+    end)
+
+    it("reports a first-attempt 404 as a plain http_error, not an auth failure", function()
+        local instance = build_instance({ { code = 404 } })
+
+        local result, err = instance:callAPI({ method = "GET", path = "/api/bookmarks/x" })
+
+        assert.is_nil(result)
         assert.are.equal("http_error", err.kind)
     end)
 

@@ -1,6 +1,7 @@
 local Api = require("readeck.net.api")
 local ArticleReadiness = require("readeck.core.article_readiness")
 local Errors = require("readeck.net.errors")
+local Export = require("readeck.annotations.export")
 local InfoMessage = require("ui/widget/infomessage")
 local JSON = require("json")
 local ProgressMessage = require("readeck.ui.progress_message")
@@ -64,10 +65,10 @@ function Articles.install(Readeck, deps)
                 Log:warn("Download at offset", offset, "failed with", err and err.kind, err and err.code)
                 if not options.quiet then
                     UIManager:show(InfoMessage:new({
-                        text = L("Requesting article list failed."),
+                        text = self:formatArticleListFailure(err),
                     }))
                 end
-                return
+                return nil, err
             end
 
             local new_article_list = {}
@@ -96,6 +97,20 @@ function Articles.install(Readeck, deps)
         end
 
         return article_list
+    end
+
+    -- "Requesting article list failed." alone reads the same for a wrong token,
+    -- a server that is down and a server bug; append what is actually known.
+    function Readeck:formatArticleListFailure(err)
+        local text = L("Requesting article list failed.")
+        local reason = err and self:formatAPIErrorMessage(err)
+        if not reason and err and err.kind == Errors.KIND.NETWORK_ERROR then
+            reason = L("Could not reach the Readeck server. Check the server URL and your network connection.")
+        end
+        if reason then
+            text = text .. "\n" .. reason
+        end
+        return text
     end
 
     function Readeck:getArticleListHTTPClient()
@@ -369,6 +384,7 @@ function Articles.install(Readeck, deps)
                 + (highlight_counts.invalid or 0)
                 + (highlight_counts.import_skipped or 0)
             action_counts.highlights_failed = (highlight_counts.error or 0) + (highlight_counts.import_failed or 0)
+            action_counts.highlights_failed_message = Export.highlight_failure_message(highlight_counts)
         end
         articles = self:filterArticlesProcessedEarlierInSync(articles, action_counts.processed_article_ids)
         -- Bookmarks that are still loading, permanently failed extraction, or
@@ -440,7 +456,7 @@ function Articles.install(Readeck, deps)
                 return
             end
             if not articles then
-                self:failSyncWithMessage(nil, L("Requesting article list failed."))
+                self:failSyncWithMessage(nil, self:formatArticleListFailure(list_err))
                 return
             end
             self:syncHighlightsThenContinue(articles)

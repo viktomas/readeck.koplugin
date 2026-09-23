@@ -165,7 +165,7 @@ function Client.install(Readeck, deps)
         if code == 200 or code == 201 or code == 202 or code == 204 then
             if filepath ~= nil then
                 Log:info("File downloaded successfully to", filepath)
-                return true
+                return true, nil, resp_headers
             else
                 local content = table.concat(sink)
                 Log:debug("Response content length:", #content, "bytes")
@@ -176,18 +176,18 @@ function Client.install(Readeck, deps)
 
                 if code == 204 then
                     Log:debug("Successfully received 204 No Content response")
-                    return true
+                    return true, nil, resp_headers
                 elseif content ~= "" and (string.sub(content, 1, 1) == "{" or string.sub(content, 1, 1) == "[") then
                     local ok, result = pcall(JSON.decode, content)
                     if ok and result then
                         Log:debug("Successfully parsed JSON response")
-                        return result
+                        return result, nil, resp_headers
                     else
                         Log:error("Failed to parse JSON:", result or "unknown error")
                     end
                 elseif content == "" then
                     Log:debug("Empty response with successful status code")
-                    return true
+                    return true, nil, resp_headers
                 else
                     Log:error("Response is not valid JSON")
                 end
@@ -212,6 +212,12 @@ function Client.install(Readeck, deps)
                 Log:error("Communication with server failed:", code)
             end
             Log:error("Request failed:", status or code, "URL:", request.url)
+            -- A 401/403 that survived a fresh token (e.g. a wrong API token,
+            -- which "refreshes" to itself) is an authentication failure, not a
+            -- generic communication error: the user has to fix credentials.
+            if (code == 401 or code == 403) and retry_auth then
+                return nil, Errors.new(Errors.KIND.AUTH_ERROR, code, status, error_message)
+            end
             return nil, Errors.new(Errors.KIND.HTTP_ERROR, code, status, error_message)
         end
     end

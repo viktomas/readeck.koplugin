@@ -35,7 +35,15 @@ describe("readeck.core.features", function()
         )
         assert.are.same(
             { notes = false, none_color = false },
-            Features.highlight_payload_profile({ version = { canonical = "0.22.1" } })
+            Features.highlight_payload_profile({ version = { canonical = "0.21.6" } })
         )
+    end)
+
+    -- Measured against real release binaries by the e2e suite: 0.22.0 and
+    -- 0.22.1 store annotation notes, 0.21.6 drops them.
+    it("treats 0.22.0 as the first version with annotation notes", function()
+        assert.is_true(Features.supports_annotation_notes({ version = { canonical = "0.22.0" } }))
+        assert.is_true(Features.supports_annotation_notes({ version = { canonical = "0.22.1" } }))
+        assert.is_false(Features.supports_annotation_notes({ version = { canonical = "0.21.6" } }))
     end)
 end)

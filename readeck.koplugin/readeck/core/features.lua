@@ -4,8 +4,11 @@ local Features = {}
 -- the email:send permission) - see internal/server/server.go in the Readeck
 -- source. There is no feature string for annotation notes or for the "none"
 -- highlight colour, so both are gated on the server version that introduced
--- them instead.
-local ANNOTATION_FEATURES_MIN_VERSION = "0.22.2"
+-- them instead: 0.22.0 ("Highlights with annotations" in Readeck's changelog).
+-- Measured by the e2e suite against real release binaries: 0.21.6 silently
+-- drops a note, 0.22.0 and 0.22.1 store it. The gate used to be 0.22.2, which
+-- stripped notes from exports to 0.22.0/0.22.1 servers.
+local ANNOTATION_FEATURES_MIN_VERSION = "0.22.0"
 
 local function parse_version(version)
     version = tostring(version or "")

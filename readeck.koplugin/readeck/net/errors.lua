@@ -104,6 +104,14 @@ function Errors.message_from_body(body, decode)
     return nil
 end
 
+-- A 404/410 on a bookmark-scoped request means the bookmark itself is gone,
+-- not that the request failed: any action whose goal is "this bookmark no
+-- longer exists / has this state" has already reached it and should not be
+-- retried or reported as a failure.
+function Errors.is_not_found(err)
+    return type(err) == "table" and err.kind == Errors.KIND.HTTP_ERROR and (err.code == 404 or err.code == 410)
+end
+
 function Errors.new(kind, code, status, message)
     return {
         kind = kind,

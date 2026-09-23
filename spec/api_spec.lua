@@ -124,4 +124,79 @@ describe("readeck.net.api", function()
         assert.is_nil(value)
         assert.are.equal(boom, err)
     end)
+
+    -- Bookmark creation answers 202 with the new id in a `Bookmark-Id` or
+    -- `Location` header, not the (empty) body; without this the id was
+    -- unreachable by create_bookmark's callers.
+    describe("bookmark_id_from_headers", function()
+        it("reads the Bookmark-Id header", function()
+            assert.are.equal("42", Api.bookmark_id_from_headers({ ["bookmark-id"] = "42" }))
+        end)
+
+        it("falls back to the id at the end of a Location header", function()
+            assert.are.equal("42", Api.bookmark_id_from_headers({ ["location"] = "/api/bookmarks/42" }))
+            assert.are.equal("42", Api.bookmark_id_from_headers({ ["location"] = "/api/bookmarks/42/" }))
+        end)
+
+        it("returns nil when neither header is present or the value is unusable", function()
+            assert.is_nil(Api.bookmark_id_from_headers({}))
+            assert.is_nil(Api.bookmark_id_from_headers(nil))
+            assert.is_nil(Api.bookmark_id_from_headers({ ["bookmark-id"] = "" }))
+            assert.is_nil(Api.bookmark_id_from_headers({ ["location"] = "/api/bookmarks/" }))
+        end)
+    end)
+
+    describe("create_bookmark", function()
+        it("puts the id from the Bookmark-Id header onto the result", function()
+            local client = Api.new(function()
+                return true, nil, { ["bookmark-id"] = "42" }
+            end)
+
+            local result = client:create_bookmark({ url = "https://example.com" })
+
+            assert.are.same({ id = "42" }, result)
+        end)
+
+        it("puts the id from a Location header onto the result", function()
+            local client = Api.new(function()
+                return true, nil, { ["location"] = "/api/bookmarks/42" }
+            end)
+
+            local result = client:create_bookmark({ url = "https://example.com" })
+
+            assert.are.same({ id = "42" }, result)
+        end)
+
+        it("does not override an id already present in the body", function()
+            local client = Api.new(function()
+                return { id = "from-body" }, nil, { ["bookmark-id"] = "from-header" }
+            end)
+
+            local result = client:create_bookmark({ url = "https://example.com" })
+
+            assert.are.equal("from-body", result.id)
+        end)
+
+        it("leaves the result untouched when there is no header and no body id", function()
+            local client = Api.new(function()
+                return true
+            end)
+
+            local result = client:create_bookmark({ url = "https://example.com" })
+
+            assert.is_true(result)
+        end)
+
+        it("does not touch the result on error", function()
+            local boom = { kind = "http_error", code = 400 }
+            local client = Api.new(function()
+                return nil, boom, { ["bookmark-id"] = "42" }
+            end)
+
+            local result, err = client:create_bookmark({ url = "https://example.com" })
+
+            assert.is_nil(result)
+            assert.are.equal(boom, err)
+        end)
+    end)
 end)
